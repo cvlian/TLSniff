@@ -28,8 +28,11 @@ static struct option TLSniffOptions[] =
     {"duration",  required_argument, 0, 'd'},
     {"interface",  required_argument, 0, 'i'},
     {"rcd-count", required_argument, 0, 'm'},
+    {"rcd-count-perflow",  required_argument, 0, 'l'},
     {"input-file",  required_argument, 0, 'r'},
     {"output-file", required_argument, 0, 'o'},
+    {"print-mode", no_argument, 0, 'p'},
+    {"quite-mode", no_argument, 0, 'q'},
     {"byte-type", no_argument, 0, 'x'},
     {"help", no_argument, 0, 'h'},
     {0, 0, 0, 0}
@@ -43,18 +46,26 @@ struct TLSPacketArrivedData
 
 void printUsage()
 {
-    printf("\nUsage:\n"
-    "----------------------\n"
-    "tlsniff [-h] [-c #packet] [-d duration] [-m #record] [-i interface / -r input_file] -o output_file [-x]\n"
-    "\nOptions:\n\n"
+    printf("\nTLSniff - a fast and simple tool to analyze SSL/TLS records\n"
+    "See https://github.com/Cvilian/TLSniff for more information\n\n"
+    "Usage: tlsniff [options] ...\n"
+    "Capture packets:\n"
+    "    -i <interface>   : Name of the network interface\n"
+    "    -r <input-file>  : Read packet data from <input-file>\n"
+    "Capture stop conditions:\n"
     "    -c <count>       : Set the maximum number of packets to read\n"
     "    -d <duration>    : Stop after <duration> seconds\n"
-    "    -i <interface>   : Name of the network interface\n"
     "    -m <rcd count>   : Set the maximum number of records to read\n"
-    "    -r <input-file>  : Read packet data from <input-file>\n"
-    "    -o <output-file> : Write all SSL/TLS record data to <output-file>\n"
+    "Processing:\n"
+    "    -l <rcd count>   : Set the maximum number of records to be extracted per flow\n"
+    "    -q               : Only send errors to stdout"
     "    -x               : Write <output-file> in hexadecimal form\n"
+    "Output:\n"
+    "    -o <output-file> : Write all SSL/TLS record data to <output-file>\n"
+    "    -p               : Write its results to stdout\n"
+    "Others:\n"
     "    -h               : Displays this help message and exits\n"
+
     "-------------------------\n");
     exit(0);
 }
@@ -83,12 +94,16 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
     rdr->stopCapture();
     rdr->close();
 
-    assembly.registerEvent();
-
-    pump::print_progressM(assembly.getTotalPacket());
-    printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
-
-    assembly.mergeRecord(config);
+    if(!(config->printmode))
+    {
+        assembly.registerEvent();
+        if(!(config->quitemode))
+        {
+            pump::print_progressM(assembly.getTotalPacket());
+            printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
+        }
+        assembly.mergeRecord(config);
+    }
 }
 
 void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
@@ -107,11 +122,16 @@ void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
 
     rdr.close();
 
-    assembly.registerEvent();
-    pump::print_progressM(assembly.getTotalPacket());
-    printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
-
-    assembly.mergeRecord(config);
+    if(!(config->printmode))
+    {
+        assembly.registerEvent();
+        if(!(config->quitemode))
+        {
+            pump::print_progressM(assembly.getTotalPacket());
+            printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
+        }
+        assembly.mergeRecord(config);
+    }
 }
 
 int main(int argc, char* argv[])
@@ -129,10 +149,13 @@ int main(int argc, char* argv[])
     uint32_t maxPacket = IN_LIMIT;
     uint32_t maxTime = IN_LIMIT;
     uint32_t maxRcd = IN_LIMIT;
+    uint32_t maxRcdpf = IN_LIMIT;
     bool outputTypeHex = false;
+    bool printmode = false;
+    bool quitemode = false;
     char opt = 0;
 
-    while((opt = getopt_long (argc, argv, "c:d:i:m:r:o:xh", TLSniffOptions, &optionIndex)) != -1)
+    while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:o:pqxh", TLSniffOptions, &optionIndex)) != -1)
     {
         switch (opt)
         {
@@ -147,6 +170,9 @@ int main(int argc, char* argv[])
             case 'i':
                 readPacketsFromInterface = optarg;
                 break;
+            case 'l':
+                maxRcdpf = atoi(optarg);
+                break;
             case 'm':
                 maxRcd = atoi(optarg);
                 break;
@@ -155,6 +181,12 @@ int main(int argc, char* argv[])
                 break;
             case 'o':
                 outputFileTo = optarg;
+                break;
+            case 'p':
+                printmode = true;
+                break;
+            case 'q':
+                quitemode = true;
                 break;
             case 'x':
                 outputTypeHex = true;
@@ -176,7 +208,7 @@ int main(int argc, char* argv[])
     if (readPacketsFromPcap != "" && readPacketsFromInterface != "")
         EXIT_WITH_OPTERROR("###ERROR : Choose only one option, pcap or interface");
 
-    if (outputFileTo == "")
+    if (outputFileTo == "" && !printmode)
         EXIT_WITH_OPTERROR("###ERROR : Output file was not provided");
 
     if (maxPacket <= 0)
@@ -186,13 +218,22 @@ int main(int argc, char* argv[])
         EXIT_WITH_OPTERROR("###ERROR : Duration can't be a non-positive integer");
 
     if (maxRcd <= 0)
+        EXIT_WITH_OPTERROR("###ERROR : #Record can't be a non-positive integer");
+
+    if (maxRcdpf <= 0)
         EXIT_WITH_OPTERROR("###ERROR : #Record per flow can't be a non-positive integer");
+
+    if (printmode && quitemode)
+        EXIT_WITH_OPTERROR("###ERROR : Could not print results to standard out while the quite mode");
 
     struct pump::CaptureConfig config = {
         .maxPacket = maxPacket,
         .maxTime = maxTime,
         .maxRcd = maxRcd,
+        .maxRcdpf = maxRcdpf,
         .outputTypeHex = outputTypeHex,
+        .printmode = printmode,
+        .quitemode = quitemode,
         .saveDir = saveDir,
         .outputFileTo = outputFileTo
     };
@@ -214,7 +255,7 @@ int main(int argc, char* argv[])
         doTLSniffOnLive(rdr, &config);
     }
     pump::clearTLSniff();
-    printf(" **All Done**\n");
+    if(!quitemode) printf(" **All Done**\n");
     WRITE_LOG("===Process Finished");
     return 0;
 }

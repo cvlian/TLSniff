@@ -40,11 +40,41 @@ static const uint32_t OFFSET_BASIS = 2166136261u;
 static const int maxbuf = 262144;
 static const long MEMORY_LIMIT = 8*1024*1024;
 
+static const std::map<uint8_t, std::string> recordType = {
+    { 20, "Change Cipher Spec" },
+    { 21, "Alert" },
+    { 22, "Handshake" },
+    { 23, "Application Data" }
+};
+
+static const std::map<uint8_t, std::string> handshakeType = {
+    { 0, "(hello request)"},
+    { 1, "(client hello)"},
+    { 2, "(server hello)"},
+    { 3, "(hello verify request)"},
+    { 4, "(new session ticket)"},
+    { 5, "(end of early data)"},
+    { 6, "(hello retry request)"},
+    { 8, "(encrypted extensions)"},
+    { 11, "(certificate)"},
+    { 12, "(server key exchange)"},
+    { 13, "(certificate request)"},
+    { 14, "(server hello done)"},
+    { 15, "(certificate verify)"},
+    { 16, "(client key exchange)"},
+    { 20, "(finished)"},
+    { 21, "(certificate url)"},
+    { 22, "(certificate status)"},
+    { 23, "(supplemental data)"},
+    { 24, "(key update)"},
+    { 25, "(compressed certificate)"}
+};
+
 typedef std::pair<uint32_t, uint32_t> seqack;
 
 namespace pump
 {
-    
+
     struct ScalarBuffer
     {
         uint8_t* buffer;
@@ -56,7 +86,10 @@ namespace pump
         uint32_t maxPacket;
         uint32_t maxTime;
         uint32_t maxRcd;
+        uint32_t maxRcdpf;
         bool outputTypeHex;
+        bool printmode;
+        bool quitemode;
         std::string saveDir;
         std::string outputFileTo;
     };
@@ -111,7 +144,9 @@ namespace pump
 
             uint32_t ab_PacketCount;
             uint32_t ab_StreamCount;
+            uint32_t ab_RecordCount;
             uint64_t ab_TotalByte;
+
             bool ab_shouldStop;
 
             struct timeval init_tv, base_tv, print_tv;
@@ -139,6 +174,8 @@ namespace pump
             uint32_t getTotalPacket() { return ab_PacketCount; };
 
             uint32_t getTotalStream() { return ab_StreamCount; }
+
+            uint32_t getTotalRecord() { return ab_RecordCount; }
 
             uint64_t getTotalByteLen() { return ab_TotalByte; }
 

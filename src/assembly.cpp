@@ -31,8 +31,8 @@ namespace pump
         *shouldStop = true;
     }
 
-    void stop_signal_callback_handler(int signum) {
-        printf("\n**All Stop**================================================\n");
+    void stop_signal_callback_handler(int signum, bool quitemode) {
+        if(!quitemode) printf("\n**All Stop**================================================\n");
         clearTLSniff();
         exit(signum);
     }
@@ -158,6 +158,7 @@ namespace pump
         init_tv = tv;
         ab_PacketCount = 0;
         ab_StreamCount = 0;
+        ab_RecordCount = 0;
         ab_TotalByte = 0;
         registerEvent();
 	}
@@ -294,6 +295,8 @@ namespace pump
         struct Host* fwd = &(peer ? ss->client : ss->server);
         struct Host* rev = &(peer ? ss->server : ss->client);
 
+        if(fwd->rcd_cnt + rev->rcd_cnt >= config->maxRcdpf) return;
+
         uint8_t TCP_analysis = 0;
 
         // ZERO WINDOW PROBE
@@ -426,27 +429,61 @@ namespace pump
                     }
                     break;
                 }
-                sprintf(pktBUF+p, "%.2x,%.2x,%.2x,%.2x,%.2x", 
-                    rcdPointer->hd[0], rcdPointer->hd[1], rcdPointer->hd[2], rcdPointer->hd[3], rcdPointer->hd[4]);
-                p += 14;
+                if(config->printmode)
+                {
+                    char sIP[16], dIP[16];
+
+                    sprintf(sIP, "%d.%d.%d.%d", (srcIP >> 24) & 0xFF, (srcIP >> 16) & 0xFF, (srcIP >>  8) & 0xFF, (srcIP) & 0xFF);
+                    sprintf(dIP, "%d.%d.%d.%d", (dstIP >> 24) & 0xFF, (dstIP >> 16) & 0xFF, (dstIP >>  8) & 0xFF, (dstIP) & 0xFF);
+                    
+                    printf("[Client] %s:%d  ", (peer ? sIP : dIP), (peer ? srcport : dstport));
+                    for (int j = strlen((peer ? sIP : dIP)); j < 15; j++) printf(" ");
+                    uint16_t temp = (peer ? srcport : dstport);
+                    for (; temp < 10000; temp *= 10) printf(" ");
+                    if(!peer) printf("<"); 
+                    uint16_t typelen = (recordType.at(rcdPointer->hd[0])).length() 
+                        + (rcdPointer->hd[0] != 22 ? 0 : (handshakeType.find(*(payld + i)) == handshakeType.end() ? 11 : (handshakeType.at(*(payld + i))).length()));
+                    for (int j = 0; j < (50-typelen)/2 + (!peer ? 0 : 1); j++) printf("-");
+                    printf(" %s%s ", (recordType.at(rcdPointer->hd[0])).c_str(),
+                        (rcdPointer->hd[0] != 22 ? "" : (handshakeType.find(*(payld + i)) == handshakeType.end() ? "(encrypted)" : (handshakeType.at(*(payld + i))).c_str())));
+                    for (int j = 0; j < (50-typelen+1)/2 + (!peer ? 0 : -1); j++) printf("-");
+                    if(peer) printf(">"); 
+                    for (int j = strlen((peer ? dIP : sIP)); j < 15; j++) printf(" ");
+                    temp = (peer ? dstport : srcport);
+                    for (; temp < 10000; temp *= 10) printf(" ");
+                    printf("%s:%d [Server]\n", (peer ? dIP : sIP), (peer ? dstport : srcport));
+                }
+                else
+                {
+                    sprintf(pktBUF+p, "%.2x,%.2x,%.2x,%.2x,%.2x", 
+                        rcdPointer->hd[0], rcdPointer->hd[1], rcdPointer->hd[2], rcdPointer->hd[3], rcdPointer->hd[4]);
+                    p += 14;
+                }
             }
-            sprintf(pktBUF+p, ",%.2x", *(payld + i));
-            p += 3;
+            if(!(config->printmode))
+            {
+                sprintf(pktBUF+p, ",%.2x", *(payld + i));
+                p += 3;
+            }
             if(++(rcdPointer->pos) == rcdPointer->len + 5u)
             {
                 rcdPointer->pos = 0;
                 (fwd->rcd_cnt)++;
-                sprintf(pktBUF+(p++), "\n");
-                pktBUF[p] = '\0';
-
+                ab_RecordCount++;
+                if(!(config->printmode))
+                {
+                    sprintf(pktBUF+(p++), "\n");
+                    pktBUF[p] = '\0';
+                    writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
+                    p = 0;
+                }
                 WRITE_LOG("└──Read Record : %d (%d)", ab_PacketCount, rcdPointer->len);
-                writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
-                p = 0; 
-                if(fwd->rcd_cnt + rev->rcd_cnt == config->maxRcd)
+                if(ab_RecordCount == config->maxRcd)
                 {
                     raise(SIGINT);
                     return;
                 }
+                if(fwd->rcd_cnt + rev->rcd_cnt >= config->maxRcdpf) return;
             }
         }
 
@@ -454,10 +491,13 @@ namespace pump
         if(rcdPointer->pos > 0)
         {
             if (p > 0)
-            { 
-                pktBUF[p] = '\0';
+            {
+                if(!(config->printmode))
+                {
+                    pktBUF[p] = '\0';
+                    writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
+                }
                 WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_PacketCount, rcdPointer->pos, rcdPointer->len);
-                writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
             }
             else
             {
@@ -500,13 +540,13 @@ namespace pump
     {
         struct timeval ref_tv = packet->getPacketTimeStamp();
         uint32_t pk_len = packet->getRawDataLen();
-        if(getTotalPacket() == 0) time_update(&(base_tv), &ref_tv);
+        if(ab_PacketCount == 0) time_update(&(base_tv), &ref_tv);
         int64_t delta_time = time_diff(&ref_tv, &(base_tv));
 
         gettimeofday(&curr_tv, NULL);
         int64_t run_time = time_diff(&ref_tv, &(base_tv));
 
-        if (getTotalPacket() >= config->maxPacket || run_time/1000000 >= (int64_t)config->maxTime)
+        if (ab_PacketCount >= config->maxPacket || run_time/1000000 >= (int64_t)config->maxTime)
         {
             raise(SIGINT);
             return;
@@ -522,7 +562,7 @@ namespace pump
             if(r_usage.ru_maxrss > MEMORY_LIMIT)
                 EXIT_WITH_RUNERROR("###ERROR : The process consume too much memory");
 
-            print_progressM(getTotalPacket());
+            if(!(config->quitemode) && !(config->printmode)) print_progressM(ab_PacketCount);
             time_update(&(print_tv), &ref_tv);
         }
 
@@ -541,7 +581,7 @@ namespace pump
 
         bool peer;
         bool sni_chk;
-        char sni[256];
+        char sni[256], cIP[16], sIP[16];
         uint32_t spt, ext_bound, sni_len;
 
         std::map<uint32_t, Stream>::iterator mit;
@@ -552,7 +592,7 @@ namespace pump
 
         for(mit = streams.begin(); mit != streams.end(); mit++)
         {
-            if(ab_shouldStop) stop_signal_callback_handler(SIGINT);
+            if(ab_shouldStop) stop_signal_callback_handler(SIGINT, config->quitemode);
 
             uint32_t ss_idx = mit->first;
             struct Stream* ss = &(mit->second);
@@ -562,20 +602,15 @@ namespace pump
 
             if (ss_idx == 0 || ss_idx + 1 == ab_StreamCount || time_diff(&ref_tv, &(print_tv)) >= 31250)
             {
-                print_progressA(ss_idx + 1, ab_StreamCount);
+                if(!(config->quitemode)) print_progressA(ss_idx + 1, ab_StreamCount);
                 time_update(&(print_tv), &ref_tv);
             }
 
             struct Host* fwd = &(ss->client);
             struct Host* rev = &(ss->server);
 
-            unsigned char cIP[4], sIP[4];
-
-            for(int i = 0; i < 4; i++)
-            {
-                cIP[i] = (fwd->IP >> (8*i)) & 0xFF;
-                sIP[i] = (rev->IP >> (8*i)) & 0xFF;
-            }
+            sprintf(cIP, "%d.%d.%d.%d", (fwd->IP >> 24) & 0xFF, (fwd->IP >> 16) & 0xFF, (fwd->IP >>  8) & 0xFF, (fwd->IP) & 0xFF);
+            sprintf(sIP, "%d.%d.%d.%d", (rev->IP >> 24) & 0xFF, (rev->IP >> 16) & 0xFF, (rev->IP >>  8) & 0xFF, (rev->IP) & 0xFF);
 
             sni_chk = false;
 
@@ -647,10 +682,8 @@ namespace pump
                         writesni:
 
                         valid_rcd++;
-                        fprintf(fw, "%d.%d.%d.%d:%d,%d.%d.%d.%d:%d,%s,%.8d,%d\n",
-                                cIP[3], cIP[2], cIP[1], cIP[0], fwd->Port,
-                                sIP[3], sIP[2], sIP[1], sIP[0], rev->Port,
-                                (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
+                        fprintf(fw, "%s:%d,%s:%d,%s,%.8d,%d\n",
+                                cIP, fwd->Port, sIP, rev->Port, (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
                     }
 
                     fprintf(fw, "%c", (peer ? 'C' : 'S'));
@@ -668,8 +701,11 @@ namespace pump
             free(filelist);
         }
         fclose(fw);
-        if(valid_rcd > 0) printf("\n");
-        printf("**Total Stream#**=========================================== (%u)", valid_rcd);
+        if(!(config->quitemode))
+        {
+            if(valid_rcd > 0) printf("\n");
+            printf("**Total Stream#**=========================================== (%u)", valid_rcd);
+        }
         streams.clear();
     }
 
