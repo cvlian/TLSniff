@@ -30,8 +30,7 @@ static struct option TLSniffOptions[] =
     {"rcd-count", required_argument, 0, 'm'},
     {"rcd-count-perflow",  required_argument, 0, 'l'},
     {"input-file",  required_argument, 0, 'r'},
-    {"output-file", required_argument, 0, 'o'},
-    {"print-mode", no_argument, 0, 'p'},
+    {"output-file", required_argument, 0, 'w'},
     {"quite-mode", no_argument, 0, 'q'},
     {"byte-type", no_argument, 0, 'x'},
     {"help", no_argument, 0, 'h'},
@@ -58,11 +57,11 @@ void printUsage()
     "    -m <rcd count>   : Set the maximum number of records to read\n"
     "Processing:\n"
     "    -l <rcd count>   : Set the maximum number of records to be extracted per flow\n"
-    "    -q               : Only send errors to stdout"
+    "    -q               : Print less-verbose record information"
     "    -x               : Write <output-file> in hexadecimal form\n"
     "Output:\n"
-    "    -o <output-file> : Write all SSL/TLS record data to <output-file>\n"
-    "    -p               : Write its results to stdout\n"
+    "    -w <output-file> : Write all SSL/TLS record data to <output-file>\n"
+    "                       (or write its results to stdout)\n"
     "Others:\n"
     "    -h               : Displays this help message and exits\n"
 
@@ -94,14 +93,13 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
     rdr->stopCapture();
     rdr->close();
 
-    if(!(config->printmode))
+    if(!(config->quitemode)) printf("\n");
+    pump::print_progressM(assembly.getTotalPacket());
+    printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
+
+    if(config->outputFileTo != "")
     {
         assembly.registerEvent();
-        if(!(config->quitemode))
-        {
-            pump::print_progressM(assembly.getTotalPacket());
-            printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
-        }
         assembly.mergeRecord(config);
     }
 }
@@ -122,14 +120,13 @@ void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
 
     rdr.close();
 
-    if(!(config->printmode))
+    if(!(config->quitemode)) printf("\n");
+    pump::print_progressM(assembly.getTotalPacket());
+    printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
+
+    if(config->outputFileTo != "")
     {
         assembly.registerEvent();
-        if(!(config->quitemode))
-        {
-            pump::print_progressM(assembly.getTotalPacket());
-            printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
-        }
         assembly.mergeRecord(config);
     }
 }
@@ -139,7 +136,7 @@ int main(int argc, char* argv[])
     gettimeofday(&init_tv, NULL);
 
     if (getuid())
-        EXIT_WITH_CONFERROR("###ERROR : Would recommend NOT running this program as non-root user!\n");
+        EXIT_WITH_CONFERROR("###ERROR : Running TLSniff requires root privileges!\n");
 
     std::string readPacketsFromPcap = "";
     std::string readPacketsFromInterface = "";
@@ -151,11 +148,10 @@ int main(int argc, char* argv[])
     uint32_t maxRcd = IN_LIMIT;
     uint32_t maxRcdpf = IN_LIMIT;
     bool outputTypeHex = false;
-    bool printmode = false;
     bool quitemode = false;
     char opt = 0;
 
-    while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:o:pqxh", TLSniffOptions, &optionIndex)) != -1)
+    while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:o:qxh", TLSniffOptions, &optionIndex)) != -1)
     {
         switch (opt)
         {
@@ -182,9 +178,6 @@ int main(int argc, char* argv[])
             case 'o':
                 outputFileTo = optarg;
                 break;
-            case 'p':
-                printmode = true;
-                break;
             case 'q':
                 quitemode = true;
                 break;
@@ -208,9 +201,6 @@ int main(int argc, char* argv[])
     if (readPacketsFromPcap != "" && readPacketsFromInterface != "")
         EXIT_WITH_OPTERROR("###ERROR : Choose only one option, pcap or interface");
 
-    if (outputFileTo == "" && !printmode)
-        EXIT_WITH_OPTERROR("###ERROR : Output file was not provided");
-
     if (maxPacket <= 0)
         EXIT_WITH_OPTERROR("###ERROR : #Packet can't be a non-positive integer");
 
@@ -223,18 +213,13 @@ int main(int argc, char* argv[])
     if (maxRcdpf <= 0)
         EXIT_WITH_OPTERROR("###ERROR : #Record per flow can't be a non-positive integer");
 
-    if (printmode && quitemode)
-        EXIT_WITH_OPTERROR("###ERROR : Could not print results to standard out while the quite mode");
-
     struct pump::CaptureConfig config = {
         .maxPacket = maxPacket,
         .maxTime = maxTime,
         .maxRcd = maxRcd,
         .maxRcdpf = maxRcdpf,
         .outputTypeHex = outputTypeHex,
-        .printmode = printmode,
         .quitemode = quitemode,
-        .saveDir = saveDir,
         .outputFileTo = outputFileTo
     };
 
@@ -255,7 +240,7 @@ int main(int argc, char* argv[])
         doTLSniffOnLive(rdr, &config);
     }
     pump::clearTLSniff();
-    if(!quitemode) printf(" **All Done**\n");
+    printf(" **All Done**\n");
     WRITE_LOG("===Process Finished");
     return 0;
 }

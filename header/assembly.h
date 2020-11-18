@@ -88,9 +88,7 @@ namespace pump
         uint32_t maxRcd;
         uint32_t maxRcdpf;
         bool outputTypeHex;
-        bool printmode;
         bool quitemode;
-        std::string saveDir;
         std::string outputFileTo;
     };
 

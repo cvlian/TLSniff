@@ -31,8 +31,8 @@ namespace pump
         *shouldStop = true;
     }
 
-    void stop_signal_callback_handler(int signum, bool quitemode) {
-        if(!quitemode) printf("\n**All Stop**================================================\n");
+    void stop_signal_callback_handler(int signum) {
+        printf("\n**All Stop**================================================\n");
         clearTLSniff();
         exit(signum);
     }
@@ -417,7 +417,7 @@ namespace pump
                     if(TCP_analysis & TCP_LOST_PACKET)
                     {
                         fwd->outoforderSeqs.insert(seqnum);
-                        sprintf(nameBUF, "%s%u/%.10dT%c", (config->saveDir).c_str(), ss_idx, rseqack.first, (peer ? 'C' : 'S'));
+                        sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, rseqack.first, (peer ? 'C' : 'S'));
                         FILE* fp = fopen(nameBUF, "w");
                         
                         if (fp == NULL)
@@ -429,7 +429,7 @@ namespace pump
                     }
                     break;
                 }
-                if(config->printmode)
+                if(!(config->quitemode))
                 {
                     char sIP[16], dIP[16];
 
@@ -453,14 +453,14 @@ namespace pump
                     for (; temp < 10000; temp *= 10) printf(" ");
                     printf("%s:%d [Server]\n", (peer ? dIP : sIP), (peer ? dstport : srcport));
                 }
-                else
+                if(config->outputFileTo != "")
                 {
                     sprintf(pktBUF+p, "%.2x,%.2x,%.2x,%.2x,%.2x", 
                         rcdPointer->hd[0], rcdPointer->hd[1], rcdPointer->hd[2], rcdPointer->hd[3], rcdPointer->hd[4]);
                     p += 14;
                 }
             }
-            if(!(config->printmode))
+            if(config->outputFileTo != "")
             {
                 sprintf(pktBUF+p, ",%.2x", *(payld + i));
                 p += 3;
@@ -470,11 +470,11 @@ namespace pump
                 rcdPointer->pos = 0;
                 (fwd->rcd_cnt)++;
                 ab_RecordCount++;
-                if(!(config->printmode))
+                if(config->outputFileTo != "")
                 {
                     sprintf(pktBUF+(p++), "\n");
                     pktBUF[p] = '\0';
-                    writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
+                    writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
                     p = 0;
                 }
                 WRITE_LOG("└──Read Record : %d (%d)", ab_PacketCount, rcdPointer->len);
@@ -492,10 +492,10 @@ namespace pump
         {
             if (p > 0)
             {
-                if(!(config->printmode))
+                if(config->outputFileTo != "")
                 {
                     pktBUF[p] = '\0';
-                    writeTLSrecord((config->saveDir).c_str(), ss_idx, peer, rseqack.first, rseqack.second);
+                    writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
                 }
                 WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_PacketCount, rcdPointer->pos, rcdPointer->len);
             }
@@ -514,7 +514,7 @@ namespace pump
         if(fwd->outoforderSeqs.find(nextseq) == fwd->outoforderSeqs.end()) return;
 
         // If the next expected seq num is equal to the first reserved packet, there would be an out-of-order issue
-        sprintf(nameBUF, "%s%u/%.10dT%c", (config->saveDir).c_str(), ss_idx, nextseq, (peer ? 'C' : 'S'));
+        sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, nextseq, (peer ? 'C' : 'S'));
         FILE* fp = fopen(nameBUF, "r");
         
         if (fp == NULL)
@@ -562,7 +562,7 @@ namespace pump
             if(r_usage.ru_maxrss > MEMORY_LIMIT)
                 EXIT_WITH_RUNERROR("###ERROR : The process consume too much memory");
 
-            if(!(config->quitemode) && !(config->printmode)) print_progressM(ab_PacketCount);
+            if(config->quitemode) print_progressM(ab_PacketCount);
             time_update(&(print_tv), &ref_tv);
         }
 
@@ -592,7 +592,7 @@ namespace pump
 
         for(mit = streams.begin(); mit != streams.end(); mit++)
         {
-            if(ab_shouldStop) stop_signal_callback_handler(SIGINT, config->quitemode);
+            if(ab_shouldStop) stop_signal_callback_handler(SIGINT);
 
             uint32_t ss_idx = mit->first;
             struct Stream* ss = &(mit->second);
@@ -602,7 +602,7 @@ namespace pump
 
             if (ss_idx == 0 || ss_idx + 1 == ab_StreamCount || time_diff(&ref_tv, &(print_tv)) >= 31250)
             {
-                if(!(config->quitemode)) print_progressA(ss_idx + 1, ab_StreamCount);
+                print_progressA(ss_idx + 1, ab_StreamCount);
                 time_update(&(print_tv), &ref_tv);
             }
 
@@ -614,7 +614,7 @@ namespace pump
 
             sni_chk = false;
 
-            numOfFile = scandir((config->saveDir + std::to_string(ss_idx)+"/").c_str(), &filelist, 0, alphasort);
+            numOfFile = scandir((saveDir + std::to_string(ss_idx)+"/").c_str(), &filelist, 0, alphasort);
             
             if (numOfFile < 0) continue;
             for (int i = 0; i < numOfFile; i++)
@@ -624,7 +624,7 @@ namespace pump
 
                 peer = (filelist[i]->d_name[20] == 'C');
 
-                sprintf(nameBUF, "%s%u/%s", (config->saveDir).c_str(), ss_idx, filelist[i]->d_name);
+                sprintf(nameBUF, "%s%u/%s", saveDir.c_str(), ss_idx, filelist[i]->d_name);
                 FILE* fr = fopen(nameBUF, "r");
 
                 if (fr == NULL)
@@ -701,11 +701,8 @@ namespace pump
             free(filelist);
         }
         fclose(fw);
-        if(!(config->quitemode))
-        {
-            if(valid_rcd > 0) printf("\n");
-            printf("**Total Stream#**=========================================== (%u)", valid_rcd);
-        }
+        if(valid_rcd > 0) printf("\n");
+        printf("**Total Stream#**=========================================== (%u)", valid_rcd);
         streams.clear();
     }
 
