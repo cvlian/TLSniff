@@ -38,31 +38,55 @@ $ sudo make all
 ```
 
 ## Usage
-
-    tlsniff [-h] [-c #packet] [-d duration] [-m #record] [-i interface / -r input_file] -o output_file [-x]
-
-    Options:
-
-    -c <count>       : Set the maximum number of packets to read
-    -d <duration>    : Stop after <duration> seconds
-    -i <interface>   : Name of the network interface
-    -m <rcd count>   : Set the maximum number of records to read
-    -r <input-file>  : Read packet data from <input-file>
-    -o <output-file> : Write all SSL/TLS record data to <output-file>
-    -x               : Write <output-file> in hexadecimal form
-    -h               : Displays this help message and exits
+    
+    Usage: tlsniff [options] ...
+    
+    Capture packets:
+        -i <interface>   : Name of the network interface
+        -r <input-file>  : Read packet data from <input-file>
+    Capture stop conditions:
+        -c <count>       : Set the maximum number of packets to read
+        -d <duration>    : Stop after <duration> seconds
+        -m <rcd count>   : Set the maximum number of records to read
+    Processing:
+        -l <rcd count>   : Set the maximum number of records to be extracted per flow
+        -q               : Print less-verbose record information
+        -x               : Write <output-file> in hexadecimal form
+    Output:
+        -w <output-file> : Write all SSL/TLS record data to <output-file>
+                           (or write its results to stdout)
+    Others:
+        -h               : Displays this help message and exits
 
 #### TLS record extraction with Pcap File:
-    $ sudo tlsniff -r example.pcap -o example.csv
+    $ sudo tlsniff -r example.pcap
+
+It will print the transmitted record messages and their directions between two hosts. 
+
+![ex_screenshot](./img/exampleA.png)
+
+
+In wireshark, 
+
+![ex_screenshot](./img/exampleB.png)
 
 #### TLS record extraction on Live Network Interface:
-    $ sudo tlsniff -i eth0 -o example.csv
-    
+    $ sudo tlsniff -i eth0 -w example.csv
+
+Write a csv file with less verbose mode.
+
+![ex_screenshot](./img/exampleC.png)
+
+All record data will be written in the order they arrived.
+
+![ex_screenshot](./img/exampleD.png)
+
+
 #### Capture TLS records during 1 minute (60 seconds)
-    $ sudo tlsniff -d 60 -i eth0 -o example.csv
+    $ sudo tlsniff -d 60 -i eth0 -w example.csv
 
 #### Capture first 100 TLS records
-    $ sudo tlsniff -m 100 -i eth0 -o example.csv
+    $ sudo tlsniff -m 100 -i eth0 -w example.csv
 
 
 ## License
