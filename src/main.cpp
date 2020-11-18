@@ -57,7 +57,7 @@ void printUsage()
     "    -m <rcd count>   : Set the maximum number of records to read\n"
     "Processing:\n"
     "    -l <rcd count>   : Set the maximum number of records to be extracted per flow\n"
-    "    -q               : Print less-verbose record information"
+    "    -q               : Print less-verbose record information\n"
     "    -x               : Write <output-file> in hexadecimal form\n"
     "Output:\n"
     "    -w <output-file> : Write all SSL/TLS record data to <output-file>\n"
@@ -151,7 +151,7 @@ int main(int argc, char* argv[])
     bool quitemode = false;
     char opt = 0;
 
-    while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:o:qxh", TLSniffOptions, &optionIndex)) != -1)
+    while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:w:qxh", TLSniffOptions, &optionIndex)) != -1)
     {
         switch (opt)
         {
@@ -175,7 +175,7 @@ int main(int argc, char* argv[])
             case 'r':
                 readPacketsFromPcap = optarg;
                 break;
-            case 'o':
+            case 'w':
                 outputFileTo = optarg;
                 break;
             case 'q':

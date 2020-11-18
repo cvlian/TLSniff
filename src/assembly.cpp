@@ -39,13 +39,13 @@ namespace pump
 
     void print_progressM(uint32_t c)
     {
-        printf("\r**Split TCP stream**======================================== (%u)", c);
+        printf("\r**Capture Packets**========================================= (%u)", c);
         fflush(stdout);
     }
 
     void print_progressA(uint32_t s, uint32_t ts)
     {
-        printf("\r**Merge TCP stream**======================================== (%d/%d) ", s, ts);
+        printf("\r**Reassemble Streams**====================================== (%d/%d) ", s, ts);
         fflush(stdout);
     }
 
@@ -702,7 +702,7 @@ namespace pump
         }
         fclose(fw);
         if(valid_rcd > 0) printf("\n");
-        printf("**Total Stream#**=========================================== (%u)", valid_rcd);
+        printf("**Total SSL flow#**========================================= (%u)", valid_rcd);
         streams.clear();
     }
 
