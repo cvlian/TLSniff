@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #include "packet.h"
-#include "layer-ip4.h"
+#include "layer-ip.h"
 
 static const int DEFAULT_DEVMODE = 1;
 static const int DEFAULT_SNAPLEN = 9000;
@@ -23,21 +23,17 @@ namespace pump
 
     class LiveReader;
 
-    typedef void (*OnPacketArrivesCallback)(Packet* packet, LiveReader* lrdr, void* userCookie);
-
-    typedef bool (*OnPacketArrivesStopBlocking)(Packet* packet, LiveReader* lrdr, void* userData);
-
-    typedef void* (*ThreadStart)(void*);
+    typedef void (*OnPacketArrival)(Packet* packet, LiveReader* lrdr, void* cookie);
 
     class Reader
     {
 
         protected:
 
-            bool rdr_ReaderOn;
-            pcap_t* rdr_PcapDescriptor;
+            bool rdr_on;
+            pcap_t* rdr_descriptor;
 
-            Reader() { rdr_ReaderOn = false; rdr_PcapDescriptor = NULL; }
+            Reader(): rdr_on(false), rdr_descriptor(NULL) {}
         
         public:
 
@@ -54,14 +50,16 @@ namespace pump
 
         protected:
 
-            char* prdr_Name;
-            uint16_t prdr_LinkLayerType;
+            char* prdr_datasrc;
+            uint16_t prdr_linktype;
 
         public:
 
-            PcapReader(const char* pcapFileName);
+            PcapReader(const char* pcapfile);
 
             ~PcapReader() { close(); }
+
+            static PcapReader* getReader(const char* pcapfile);
 
             bool open();
 
@@ -74,21 +72,21 @@ namespace pump
     class LiveReader : public Reader
     {
 
-        friend class LiveInterfaces;
-
         protected:
 
-            char* lrdr_Name;
-            uint16_t lrdr_LinkLayerType;
-            bool lrdr_CaptureThreadOn;
-            bool lrdr_StopThread;
-            OnPacketArrivesCallback lrdr_cbOnPacketArrives;
-            void* lrdr_cbOnPacketArrivesUserCookie;
-            pthread_t lrdr_CaptureThread;
+            char* lrdr_datasrc;
+            uint16_t lrdr_linktype;
+            bool lrdr_on_capture;
+            bool lrdr_on_stop;
+            OnPacketArrival lrdr_pkt_arrival;
+            void* lrdr_pkt_arrival_cookie;
+            pthread_t lrdr_thread_capture;
 
-            pcap_t* doOpen();
+            pcap_t* LiveInit();
+
             static void* captureThreadMain(void* ptr);
-            static void onPacketArrives(uint8_t* user, const struct pcap_pkthdr* pkthdr, const uint8_t* packet);
+
+            static void onPacketArrival(uint8_t* user, const struct pcap_pkthdr* pkt_hdr, const uint8_t* packet);
 
         public:
 
@@ -98,13 +96,13 @@ namespace pump
 
             bool open();
 
-            void startCapture(OnPacketArrivesCallback onPacketArrives, void* onPacketArrivesUserCookie);
+            void startCapture(OnPacketArrival onPacketArrival, void* onPacketArrivalCookie);
 
             void stopCapture();
 
-            const char* getName() const { return lrdr_Name; }
+            const char* getName() const { return lrdr_datasrc; }
 
-            uint getLinkLayerType() const { return lrdr_LinkLayerType; }
+            uint16_t getLinkType() const { return lrdr_linktype; }
 
             void close();
 
@@ -115,7 +113,7 @@ namespace pump
 
         private:
 
-            std::vector<LiveReader*> li_InterfaceList;
+            std::vector<LiveReader*> li_ifacelist;
 
             LiveInterfaces();
 

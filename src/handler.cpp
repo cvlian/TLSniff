@@ -67,10 +67,10 @@ namespace pump
             {
                 pthread_mutex_lock(&mutex);
 
-                if (EventHandler::getInstance().h_InterruptedHandler != NULL)
-                    EventHandler::getInstance().h_InterruptedHandler(EventHandler::getInstance().h_InterruptedCookie);
+                if (EventHandler::getInstance().h_interrupt_handler != NULL)
+                    EventHandler::getInstance().h_interrupt_handler(EventHandler::getInstance().h_interrupt_cookie);
 
-                EventHandler::getInstance().h_InterruptedHandler = NULL;
+                EventHandler::getInstance().h_interrupt_handler = NULL;
 
                 pthread_mutex_unlock(&mutex);
                 return;
@@ -84,8 +84,8 @@ namespace pump
 
     void EventHandler::onInterrupted(EventHandlerCallback handler, void* cookie)
     {
-        h_InterruptedHandler = handler;
-        h_InterruptedCookie = cookie;
+        h_interrupt_handler = handler;
+        h_interrupt_cookie = cookie;
 
         struct sigaction action;
         memset(&action, 0, sizeof(struct sigaction));

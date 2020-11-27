@@ -10,9 +10,8 @@
 #include <vector>
 
 #include "layer-eth.h"
-#include "layer-ip4.h" 
-#include "layer-sll.h"    
-#include "layer-payload.h"
+#include "layer-ip.h" 
+#include "layer-data.h"
 #include "packet.h"
 
 namespace pump
@@ -20,12 +19,32 @@ namespace pump
 
     void Packet::Init()
     {
-        pk_RawDataLen = 0;
-        pk_DeleteRawDataAtDestructor = true;
-        pk_LinkLayerType = LINKTYPE_ETHERNET;
-        pk_FirstLayer = NULL;
-        pk_LastLayer = NULL;
-        pk_RawData = 0;
+        pk_datalen = 0;
+        pk_delete_data = true;
+        pk_linktype = LINKTYPE_ETHERNET;
+        pk_firstlayer = NULL;
+        pk_lastlayer = NULL;
+        pk_data = 0;
+    }
+
+    Layer* Packet::initLayer(uint16_t linktype)
+    {
+        if (pk_datalen == 0)
+            return NULL;
+
+        if (linktype == LINKTYPE_ETHERNET)
+        {
+            if ((unsigned long)pk_datalen >= sizeof(eth_hdr))
+            {
+                uint16_t ethTypeOrLength = be16toh(*(uint16_t*)(pk_data + 12));
+                if (ethTypeOrLength > (uint16_t)0x5dc || ethTypeOrLength != 0)
+                {
+                    return new EthLayer(pk_data, pk_datalen, NULL);
+                }	
+            }
+        }
+
+        return new DataLayer(pk_data, pk_datalen, NULL);
     }
 
     Packet::Packet()
@@ -33,154 +52,73 @@ namespace pump
         Init();
     }
 
-    Packet::Packet(const uint8_t* data, int rawDataLen, timeval timestamp, bool deleteRawDataAtDestructor, uint16_t layerType)
+    Packet::Packet(const uint8_t* data, uint16_t datalen, timeval ts, bool delete_rawdata, uint16_t layertype)
     {
         Init();
-        pk_DeleteRawDataAtDestructor = deleteRawDataAtDestructor;
-        setRawData(data, rawDataLen, timestamp, layerType);
+        pk_delete_data = delete_rawdata;
+        setData(data, datalen, ts, layertype);
     }
 
-    Packet::~Packet()
+    bool Packet::setData(const uint8_t* data, uint16_t datalen, timeval ts, uint16_t layertype)
     {
-        destructPacketData();
-    }
+        clearData();
 
-    void Packet::destructPacketData()
-    {
-        if (pk_RawData != 0 && pk_DeleteRawDataAtDestructor)
+        pk_data = (uint8_t*)data;
+        pk_datalen = datalen;
+        pk_timestamp = ts;
+        pk_linktype = layertype;
+        pk_firstlayer = NULL;
+        pk_lastlayer = NULL;
+        pk_proto_types = PROTO_UNKNOWN;
+
+        if (pk_data == 0)
+            return true;
+
+        pk_firstlayer = initLayer(pk_linktype);
+
+        pk_lastlayer = pk_firstlayer;
+        Layer* curr_layer = pk_firstlayer;
+
+        while (curr_layer != NULL)
         {
-            delete[] pk_RawData;
-        }
-    }
-
-    void Packet::setRawPacket()
-    {
-        pk_FirstLayer = NULL;
-        pk_LastLayer = NULL;
-        pk_ProtocolTypes = PROTO_UnknownProtocol;
-        if (pk_RawData == 0)
-            return;
-
-        pk_FirstLayer = createFirstLayer(pk_LinkLayerType);
-
-        pk_LastLayer = pk_FirstLayer;
-        Layer* curLayer = pk_FirstLayer;
-
-        while (curLayer != NULL)
-        {
-            pk_ProtocolTypes |= curLayer->getProtocol();
-            curLayer->parseNextLayer();
-            curLayer = curLayer->getNextLayer();
-            if (curLayer != NULL)
-                pk_LastLayer = curLayer;
+            pk_proto_types |= curr_layer->getProtocol();
+            curr_layer->dissectData();
+            curr_layer = curr_layer->getNextLayer();
+            if (curr_layer != NULL)
+                pk_lastlayer = curr_layer;
         }
     
-        if (pk_LastLayer != NULL)
+        if (pk_lastlayer != NULL)
         {
-            int trailerLen = (int)((pk_RawData + pk_RawDataLen) - (pk_LastLayer->getData() + pk_LastLayer->getDataLen()));
+            uint16_t trailer_len = (uint16_t)((pk_data + pk_datalen) - (pk_lastlayer->getData() + pk_lastlayer->getDataLen()));
 
-            if (trailerLen > 0)
+            if (trailer_len > 0)
             {
-                PacketTrailerLayer* trailerLayer = new PacketTrailerLayer(
-                        (uint8_t*)(pk_LastLayer->getData() + pk_LastLayer->getDataLen()),
-                        trailerLen,
-                        pk_LastLayer);
+                TrailerLayer* trailerLayer = new TrailerLayer((uint8_t*)(pk_lastlayer->getData() + pk_lastlayer->getDataLen()), trailer_len, pk_lastlayer);
 
-                pk_LastLayer->setNextLayer(trailerLayer);
-                pk_LastLayer = trailerLayer;
-                pk_ProtocolTypes |= trailerLayer->getProtocol();
+                pk_lastlayer->setNextLayer(trailerLayer);
+                pk_lastlayer = trailerLayer;
+                pk_proto_types |= trailerLayer->getProtocol();
             }
         }
-    }
-
-    bool Packet::setRawData(const uint8_t* pRawData, int rawDataLen, timeval timestamp, uint16_t layerType)
-    {
-        destructPacketData();
-
-        pk_RawData = (uint8_t*)pRawData;
-        pk_RawDataLen = rawDataLen;
-        pk_TimeStamp = timestamp;
-        pk_LinkLayerType = layerType;
-        pk_FirstLayer = NULL;
-        setRawPacket();
 
         return true;
     }
-    
-    Layer* Packet::createFirstLayer(uint16_t linkType)
+
+    void Packet::clearData()
     {
-        if (pk_RawDataLen == 0)
-            return NULL;
+        Layer* curr_layer = pk_firstlayer;
+        while(curr_layer != NULL)
+        {
+            Layer* next_layer = curr_layer->getNextLayer();
+            delete curr_layer;
+            curr_layer = next_layer;
+        }
 
-        if (linkType == LINKTYPE_ETHERNET)
+        if (pk_data != 0 && pk_delete_data)
         {
-            if ((unsigned long)pk_RawDataLen >= sizeof(ether2_header))
-            {
-                uint16_t ethTypeOrLength = be16toh(*(uint16_t*)(pk_RawData + 12));
-                if (ethTypeOrLength <= (uint16_t)0x5dc && ethTypeOrLength != 0)
-                {
-                    return new Eth802_3Layer(pk_RawData, pk_RawDataLen);
-                }
-                else
-                {
-                    return new Eth2Layer(pk_RawData, pk_RawDataLen);
-                }	
-            }
-            else
-            {
-                return new PayloadLayer(pk_RawData, pk_RawDataLen, NULL);
-            }
+            delete[] pk_data;
         }
-        else if (linkType == LINKTYPE_LINUX_SLL)
-        {
-            return new SllLayer(pk_RawData, pk_RawDataLen);
-        }
-        /* Does nothing for this layer (NullLoopbackLayer can't have TLS records)
-        else if (linkType == LINKTYPE_NULL)
-        {
-        }
-        */
-        else if (linkType == LINKTYPE_RAW || linkType == LINKTYPE_DLT_RAW1 || linkType == LINKTYPE_DLT_RAW2)
-        {
-            uint8_t ipVer = pk_RawData[0] & 0xf0;
-            if (ipVer == 0x40)
-            {
-                return IPv4Layer::isDataValid(pk_RawData, pk_RawDataLen)
-                    ? static_cast<Layer*>(new IPv4Layer(pk_RawData, pk_RawDataLen, NULL))
-                    : static_cast<Layer*>(new PayloadLayer(pk_RawData, pk_RawDataLen, NULL));
-            }
-            /* Does nothing for this layer (Dismiss IPV6 for this version...)
-            else if (ipVer == 0x60)
-            {
-            }
-            */
-            else
-            {
-                return new PayloadLayer(pk_RawData, pk_RawDataLen, NULL);
-            }
-        }
-        else if (linkType == LINKTYPE_IPV4)
-        {
-            return IPv4Layer::isDataValid(pk_RawData, pk_RawDataLen)
-                ? static_cast<Layer*>(new IPv4Layer(pk_RawData, pk_RawDataLen, NULL))
-                : static_cast<Layer*>(new PayloadLayer(pk_RawData, pk_RawDataLen, NULL));
-        }
-        /* Does nothing for this layer (Dismiss IPV6 for this version...)
-        else if (linkType == LINKTYPE_IPV6)
-        {
-        }
-        */
-
-        return new PayloadLayer(pk_RawData, pk_RawDataLen, NULL);
-    }
-
-    void Packet::clear()
-    {
-        if (pk_RawData != 0)
-            delete[] pk_RawData;
-
-        pk_RawData = 0;
-        pk_RawDataLen = 0;
     }
 
 }

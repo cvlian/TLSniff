@@ -16,11 +16,6 @@
 #include "layer.h"
 
 #define LINKTYPE_ETHERNET          1
-#define LINKTYPE_DLT_RAW1         12
-#define LINKTYPE_DLT_RAW2         14
-#define LINKTYPE_RAW             101
-#define LINKTYPE_LINUX_SLL       113
-#define LINKTYPE_IPV4            228
 
 #define MAX_PACKET_SIZE        65536
 
@@ -30,79 +25,69 @@ namespace pump
     class Packet
     {
 
-        friend class Layer;
-
         protected:
             
-            uint8_t* pk_RawData;
-            int pk_RawDataLen;
-            bool pk_DeleteRawDataAtDestructor;
-            uint16_t pk_LinkLayerType;
-            uint64_t pk_ProtocolTypes;
-            timeval pk_TimeStamp;
-            Layer* pk_FirstLayer;
-            Layer* pk_LastLayer;
+            uint8_t* pk_data;
+            uint16_t pk_datalen;
+            bool pk_delete_data;
+            uint16_t pk_linktype;
+            uint8_t pk_proto_types;
+            timeval pk_timestamp;
+            Layer* pk_firstlayer;
+            Layer* pk_lastlayer;
 
             void Init();
+
+            Layer* initLayer(uint16_t linktype);
 
         public:
 
             Packet();
 
-            Packet(const uint8_t* data, int rawDataLen, timeval timestamp, bool deleteRawDataAtDestructor, uint16_t layerType = LINKTYPE_ETHERNET);
+            Packet(const uint8_t* data, uint16_t datalen, timeval ts, bool delete_rawdata, uint16_t layertype = LINKTYPE_ETHERNET);
 
-            ~Packet();
+            ~Packet() { clearData(); }
 
-            void destructPacketData();
+            bool setData(const uint8_t* data, uint16_t datalen, timeval ts, uint16_t layertype = LINKTYPE_ETHERNET);
 
-            void setRawPacket();
+            template<class TLayer> TLayer* getLayer() const;
 
-            bool setRawData(const uint8_t* pRawData, int rawDataLen, timeval timestamp, uint16_t layerType = LINKTYPE_ETHERNET);
-            
-            Layer* createFirstLayer(uint16_t linkType);
+            template<class TLayer> TLayer* getNextLayer(Layer* layertype) const;
 
-            template<class TLayer>
-            TLayer* getLayerOfType() const;
+            const uint8_t* getData() const { return pk_data; }
 
-            template<class TLayer>
-            TLayer* getNextLayerOfType(Layer* after) const;
+            uint16_t getDataLen() const { return pk_datalen; }
 
-            const uint8_t* getRawData() const { return pk_RawData; }
+            timeval getTimeStamp() const { return pk_timestamp; }
 
-            int getRawDataLen() const { return pk_RawDataLen; }
+            uint8_t getProtocolTypes() const { return pk_proto_types; }
 
-            timeval getPacketTimeStamp() const { return pk_TimeStamp; }
+            bool isTypeOf(uint8_t protocol) const { return pk_proto_types & protocol; }
 
-            uint64_t getProtocolTypes() const { return pk_ProtocolTypes; }
-
-            bool isPacketOfType(uint64_t protocolType) const { return pk_ProtocolTypes & protocolType; }
-
-            void clear();
+            void clearData();
 
     };
 
-    template<class TLayer>
-    TLayer* Packet::getLayerOfType() const
+    template<class T> T* Packet::getLayer() const
     {
-        if (dynamic_cast<TLayer*>(pk_FirstLayer) != NULL)
-            return (TLayer*)pk_FirstLayer;
+        if (dynamic_cast<T*>(pk_firstlayer) != NULL)
+            return (T*)pk_firstlayer;
 
-        return getNextLayerOfType<TLayer>(pk_FirstLayer);
+        return getNextLayer<T>(pk_firstlayer);
     }
 
-    template<class TLayer>
-    TLayer* Packet::getNextLayerOfType(Layer* after) const
+    template<class T> T* Packet::getNextLayer(Layer* layertype) const
     {
-        if (after == NULL)
+        if (layertype == NULL)
             return NULL;
 
-        Layer* curLayer = after->getNextLayer();
-        while ((curLayer != NULL) && (dynamic_cast<TLayer*>(curLayer) == NULL))
+        Layer* curr_layer = layertype->getNextLayer();
+        while ((curr_layer != NULL) && (dynamic_cast<T*>(curr_layer) == NULL))
         {
-            curLayer = curLayer->getNextLayer();
+            curr_layer = curr_layer->getNextLayer();
         }
 
-        return (TLayer*)curLayer;
+        return (T*)curr_layer;
     }
 
 }

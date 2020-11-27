@@ -12,73 +12,34 @@
 
 #include "layer.h"
 
-#pragma pack(push, 1)
-    struct ether2_header {
-        uint8_t dstMac[6];        /** Destination MAC */
-        uint8_t srcMac[6];        /** Source MAC */
-        uint16_t etherType;       /** EtherType */
-    };
-#pragma pack(pop)
-
-#pragma pack(push, 1)
-    struct ether802_3_header {
-        uint8_t dstMac[6];       /** Destination MAC */
-        uint8_t srcMac[6];       /** Source MAC */
-        uint16_t length;         /** Length */
-    };
-#pragma pack(pop)
-
-#define	ETHERTYPE_IP             0x0800  /** IP */
-#define	ETHERTYPE_ARP            0x0806  /** Address resolution */
-#define	ETHERTYPE_VLAN           0x8100  /** IEEE 802.1Q VLAN tagging */
-#define	ETHERTYPE_IPV6           0x86dd  /** IP protocol version 6 */
-#define ETHERTYPE_PPPOES         0x8864  /** PPPoE session */
-#define ETHERTYPE_MPLS           0x8847  /** MPLS */
-#define ETHERTYPE_PPP            0x880B  /** Point-to-point protocol (PPP) */
+#define	ETHERTYPE_IP       0x0800
 
 namespace pump
 {
+
+    typedef struct _eth_hdr
+    {
+        uint8_t dst[6];
+        uint8_t src[6];
+        uint16_t type;
+    } eth_hdr;
     
     class EthLayer : public Layer
     {
 
         public:
 
-            uint8_t getOsiModelLayer() const { return OSI_DataLinkLayer; }
+            EthLayer(uint8_t* data, size_t datalen, Layer* prev_layer) : Layer(data, datalen, prev_layer) { l_proto = PROTO_ETHERNET; }
 
-        protected:
+            virtual ~EthLayer() {};
 
-            EthLayer(uint8_t* data, size_t dataLen, Layer* prevLayer) : Layer(data, dataLen, prevLayer) {}
+            void dissectData();
 
-    };
+            eth_hdr* getHeader() const { return (eth_hdr*)l_data; }
 
-    class Eth2Layer : public EthLayer
-    {
+            size_t getHeaderLen() const { return sizeof(eth_hdr); }
 
-        public:
-
-            Eth2Layer(uint8_t* data, size_t dataLen): EthLayer(data, dataLen, NULL) { l_Protocol = PROTO_Ethernet2; }
-
-            Eth2Layer(uint8_t* data, size_t dataLen, Layer* prevLayer) : EthLayer(data, dataLen, prevLayer) { l_Protocol = PROTO_Ethernet2; }
-
-            void parseNextLayer();
-
-            ether2_header* getEthHeader() const { return (ether2_header*)l_Data; }
-
-            size_t getHeaderLen() const { return sizeof(ether2_header); }
-
-    };
-
-    class Eth802_3Layer : public EthLayer
-    {
-
-        public:
-
-            Eth802_3Layer(uint8_t* data, size_t dataLen) : EthLayer(data, dataLen, NULL) { l_Protocol = PROTO_Ethernet802_3; }
-
-            void parseNextLayer();
-
-            size_t getHeaderLen() const { return sizeof(ether802_3_header); }
+            bool isValidLayer(const uint8_t* data, size_t datalen);
 
     };
 

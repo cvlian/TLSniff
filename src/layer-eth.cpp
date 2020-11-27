@@ -9,65 +9,31 @@
 #include <arpa/inet.h>
 
 #include "layer-eth.h"
-#include "layer-ip4.h"
-#include "layer-mpls.h"
-#include "layer-vlan.h"
-#include "layer-pppoe.h"
-#include "layer-payload.h"
+#include "layer-ip.h"
+#include "layer-data.h"
 
 namespace pump
 {
     
-    void Eth2Layer::parseNextLayer()
+    void EthLayer::dissectData()
     {
-        if (l_DataLen <= sizeof(ether2_header))
+        if (l_datalen <= sizeof(eth_hdr))
             return;
 
-        ether2_header* hdr = getEthHeader();
-        uint8_t* payload = l_Data + sizeof(ether2_header);
-        size_t payloadLen = l_DataLen - sizeof(ether2_header);
+        eth_hdr* hdr = getHeader();
+        uint8_t* payload = l_data + sizeof(eth_hdr);
+        size_t payloadLen = l_datalen - sizeof(eth_hdr);
 
-        switch (be16toh(hdr->etherType))
+        switch (be16toh(hdr->type))
         {
             case ETHERTYPE_IP:
-                l_NextLayer = IPv4Layer::isDataValid(payload, payloadLen)
+                l_nextlayer = IPv4Layer::isValidLayer(payload, payloadLen)
                     ? static_cast<Layer*>(new IPv4Layer(payload, payloadLen, this))
-                    : static_cast<Layer*>(new PayloadLayer(payload, payloadLen, this));
-                break;
-            /* Does nothing for this layer (Dismiss IPV6 for this version...)
-            case ETHERTYPE_IPV6:
-            */
-            /* Does nothing for this layer (ArpLayer can't have TLS records)
-            case ETHERTYPE_ARP:
-            */
-            case ETHERTYPE_VLAN:
-                l_NextLayer = new VlanLayer(payload, payloadLen, this);
-                break;
-            case ETHERTYPE_PPPOES:
-                l_NextLayer = PPPoESessionLayer::isDataValid(payload, payloadLen)
-                    ? static_cast<Layer*>(new PPPoESessionLayer(payload, payloadLen, this))
-                    : static_cast<Layer*>(new PayloadLayer(payload, payloadLen, this));
-                break;
-            /* Does nothing for this layer (PPPoEDiscoveryLayer can't have TLS records) 
-            case ETHERTYPE_PPPOED:
-            */
-            case ETHERTYPE_MPLS:
-                l_NextLayer = new MplsLayer(payload, payloadLen, this);
+                    : static_cast<Layer*>(new DataLayer(payload, payloadLen, this));
                 break;
             default:
-                l_NextLayer = new PayloadLayer(payload, payloadLen, this);
+                l_nextlayer = new DataLayer(payload, payloadLen, this);
         }
-    }
-
-    void Eth802_3Layer::parseNextLayer()
-    {
-        if (l_DataLen <= sizeof(ether802_3_header))
-            return;
-
-        uint8_t* payload = l_Data + sizeof(ether802_3_header);
-        size_t payloadLen = l_DataLen - sizeof(ether802_3_header);
-
-        l_NextLayer = new PayloadLayer(payload, payloadLen, this);
     }
 
 }

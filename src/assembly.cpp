@@ -15,6 +15,7 @@
 #include <sys/types.h>
 #include <sys/resource.h>
 
+#include "utils.h"
 #include "handler.h"
 #include "assembly.h"
 
@@ -23,30 +24,18 @@ namespace pump
     
     char pktBUF[maxbuf];
     char nameBUF[512];
-    struct timeval curr_tv;
+    timeval curr_tv;
 
     static void onInterrupted(void* cookie)
     {
-        bool* shouldStop = (bool*)cookie;
-        *shouldStop = true;
+        bool* stop = (bool*)cookie;
+        *stop = true;
     }
 
     void stop_signal_callback_handler(int signum) {
         printf("\n**All Stop**================================================\n");
         clearTLSniff();
         exit(signum);
-    }
-
-    void print_progressM(uint32_t c)
-    {
-        printf("\r**Capture Packets**========================================= (%u)", c);
-        fflush(stdout);
-    }
-
-    void print_progressA(uint32_t s, uint32_t ts)
-    {
-        printf("\r**Reassemble Streams**====================================== (%d/%d) ", s, ts);
-        fflush(stdout);
     }
 
     void writeTLSrecord(const char* dir, int idx, bool peer, uint32_t Seq, uint32_t Ack)
@@ -61,27 +50,6 @@ namespace pump
         fclose(fp);
     }
 
-    uint32_t parseIPV4string(const char* ipAddress) 
-    {
-        unsigned char ipbytes[4];
-        sscanf(ipAddress, "%hhu.%hhu.%hhu.%hhu", &ipbytes[3], &ipbytes[2], &ipbytes[1], &ipbytes[0]);
-        return ipbytes[0] | ipbytes[1] << 8 | ipbytes[2] << 16 | ipbytes[3] << 24;
-    }
-
-    uint32_t fnv_hash(ScalarBuffer vec[], size_t vecSize)
-    {
-        uint32_t hash = OFFSET_BASIS;
-        for (size_t i = 0; i < vecSize; ++i)
-        {
-            for (size_t j = 0; j < vec[i].len; ++j)
-            {
-                hash *= FNV_PRIME;
-                hash ^= vec[i].buffer[j];
-            }
-        }
-        return hash;
-    }
-
     uint32_t hashStream(pump::Packet* packet)
     {
         struct ScalarBuffer vec[5];
@@ -90,9 +58,9 @@ namespace pump
         uint16_t portDst = 0;
         int srcPosition = 0;
 
-        pump::TcpLayer* tcpLayer = packet->getLayerOfType<pump::TcpLayer>();
-        portSrc = tcpLayer->getTcpHeader()->portSrc;
-        portDst = tcpLayer->getTcpHeader()->portDst;
+        pump::TcpLayer* tcpLayer = packet->getLayer<pump::TcpLayer>();
+        portSrc = tcpLayer->getHeader()->sport;
+        portDst = tcpLayer->getHeader()->dport;
 
         if (portDst < portSrc)
         {
@@ -104,99 +72,90 @@ namespace pump
         vec[1 - srcPosition].buffer = (uint8_t*)&portDst;
         vec[1 - srcPosition].len = 2;
 
-        pump::IPv4Layer* ipv4Layer = packet->getLayerOfType<pump::IPv4Layer>();
-
-        if (portSrc == portDst && ipv4Layer->getIPv4Header()->ipDst < ipv4Layer->getIPv4Header()->ipSrc)
+        pump::IPv4Layer* ipv4Layer = packet->getLayer<pump::IPv4Layer>();
+        if (portSrc == portDst && ipv4Layer->getHeader()->ip_dst < ipv4Layer->getHeader()->ip_src)
         {
             srcPosition = 1;
         }
 
-        vec[2 + srcPosition].buffer = (uint8_t*)&ipv4Layer->getIPv4Header()->ipSrc;
+        vec[2 + srcPosition].buffer = (uint8_t*)&ipv4Layer->getHeader()->ip_src;
         vec[2 + srcPosition].len = 4;
-        vec[3 - srcPosition].buffer = (uint8_t*)&ipv4Layer->getIPv4Header()->ipDst;
+        vec[3 - srcPosition].buffer = (uint8_t*)&ipv4Layer->getHeader()->ip_dst;
         vec[3 - srcPosition].len = 4;
-        vec[4].buffer = &(ipv4Layer->getIPv4Header()->protocol);
+        vec[4].buffer = &(ipv4Layer->getHeader()->proto);
         vec[4].len = 1;
 
         return fnv_hash(vec, 5);
     }    
 
-    int64_t time_diff(struct timeval* etv, struct timeval* stv)
+    bool isTcpSyn(pump::Packet* packet)
     {
-        int64_t dif = 1000000 * (int64_t)(etv->tv_sec - stv->tv_sec) + (int64_t)etv->tv_usec - (int64_t)stv->tv_usec;
-        // Negative delta time from previous captured frame -> out of order
-        if(dif < 0) return -1;
-
-        return dif;
-    }
-
-    void time_update(struct timeval* tv1, struct timeval* tv2)
-    {
-        tv1->tv_usec = tv2->tv_usec;
-        tv1->tv_sec = tv2->tv_sec;
-    }
-
-    bool Assembly::isTcpSyn(pump::Packet* packet)
-    {
-        if (packet->isPacketOfType(PROTO_TCP))
+        if (packet->isTypeOf(PROTO_TCP))
         {
-
-            pump::TcpLayer* tcpLayer = packet->getLayerOfType<pump::TcpLayer>();
-
-            bool isSyn = (tcpLayer->getTcpHeader()->synFlag == 1);
-            bool isNotAck = (tcpLayer->getTcpHeader()->ackFlag == 0);
-
-            // return true only if it's a pure SYN packet (and not SYN/ACK)
-            return (isSyn && isNotAck);
+            pump::TcpLayer* tcpLayer = packet->getLayer<pump::TcpLayer>();
+            return (tcpLayer->getHeader()->flag_syn == 1) && (tcpLayer->getHeader()->flag_ack == 0);
         }
 
         return false;
     }
 
-    Assembly::Assembly(timeval tv) : base_tv((struct timeval){ 0 }), print_tv((struct timeval){ 0 }), ab_FlowTable(), ab_TcpFlowTable(), streams() 
-	{
-        init_tv = tv;
-        ab_PacketCount = 0;
-        ab_StreamCount = 0;
-        ab_RecordCount = 0;
-        ab_TotalByte = 0;
+    bool isClient(pump::Packet* packet, Stream* ss)
+    {
+        if(ss->client.port != ss->server.port)
+        {
+            return ss->client.port == (uint16_t)ntohs(packet->getLayer<pump::TcpLayer>()->getHeader()->sport);
+        }
+
+        return (ss->client.ip == packet->getLayer<IPv4Layer>()->getHeader()->ip_src);
+    }
+
+    Assembly::Assembly(timeval tv)
+    {
+        ab_init_tv = tv;
+        ab_base_tv = {0, 0};
+        ab_print_tv = {0, 0};
+        ab_flowtable = {};
+        ab_initiated = {};
+        ab_smap = {};
+        ab_pkt_cnt = 0;
+        ab_flow_cnt = 0;
+        ab_rcd_cnt = 0;
+        ab_totalbytes = 0;
         registerEvent();
-	}
+    }
 
     Assembly::~Assembly() 
 	{
-        ab_FlowTable.clear();
-        ab_TcpFlowTable.clear();
-        streams.clear();
+        ab_flowtable.clear();
+        ab_initiated.clear();
+        ab_smap.clear();
 	}
 
     void Assembly::registerEvent()
     {
-        ab_shouldStop = false;
-        pump::EventHandler::getInstance().onInterrupted(onInterrupted, &ab_shouldStop);
+        ab_stop = false;
+        pump::EventHandler::getInstance().onInterrupted(onInterrupted, &ab_stop);
     }
 
-    int Assembly::addNewStream()
+    int Assembly::addNewStream(pump::Packet* packet)
     {
-        struct Host client = {0, 0, 0xffff, 0, 0, 0, {}, {}, {}, {}};
-        struct Host server = {0, 0, 0xffff, 0, 0, 0, {}, {}, {}, {}};
+        Flow client, server;
 
-        struct Stream ss = {
-            .tlsFlags = 0,
-            .baseseq = 0,
-            .baseack = 0,
-            .client = client,
-            .server = server
-            };
+        client.ip = packet->getLayer<IPv4Layer>()->getHeader()->ip_src;
+        server.ip = packet->getLayer<IPv4Layer>()->getHeader()->ip_dst;
 
-        streams[ab_StreamCount] = ss;
+        client.port = (uint16_t)ntohs(packet->getLayer<pump::TcpLayer>()->getHeader()->sport);
+        server.port = (uint16_t)ntohs(packet->getLayer<pump::TcpLayer>()->getHeader()->dport);
 
-        std::string sd = saveDir + std::to_string(ab_StreamCount) + "/";
+        ab_smap[ab_flow_cnt] = {.client = client,
+                                .server = server};
+
+        std::string sd = saveDir + std::to_string(ab_flow_cnt) + "/";
 
         if(access(sd.c_str(), 0) == -1)
             mkdir(sd.c_str(), 0777);
 
-        return ab_StreamCount++;
+        return ab_flow_cnt++;
     }
 
     int Assembly::getStreamNumber(pump::Packet* packet)
@@ -206,177 +165,166 @@ namespace pump
 
         bool isSyn = isTcpSyn(packet);
 
-        if (ab_FlowTable.find(hash) == ab_FlowTable.end())
+        if (ab_flowtable.find(hash) == ab_flowtable.end())
         {
             // We do not care about truncated flow
             if(!isSyn) return -1;
 
-            ab_FlowTable[hash] = addNewStream();
-            ab_TcpFlowTable[hash] = true;
+            ab_flowtable[hash] = addNewStream(packet);
+            ab_initiated[hash] = true;
         }
         else
         {
-            if (isSyn && ab_TcpFlowTable.find(hash) != ab_TcpFlowTable.end() && ab_TcpFlowTable[hash] == false)
+            if (isSyn && ab_initiated[hash] == false)
             {
-                ab_FlowTable[hash] = addNewStream();
+                ab_flowtable[hash] = addNewStream(packet);
             }
-            ab_TcpFlowTable[hash] = isSyn;
+            ab_initiated[hash] = isSyn;
         }
-        return ab_FlowTable[hash];
+        return ab_flowtable[hash];
     }
 
-    void Assembly::parsePacket(pump::Packet* packet, struct CaptureConfig* config)
+    void Assembly::parsePacket(pump::Packet* packet, CaptureConfig* config)
     {
 
-        if (!(packet->getProtocolTypes() & PROTO_TCP)
-        || !((packet->getProtocolTypes()) & PROTO_IPv4)) return;
+        if (!packet->isTypeOf(PROTO_TCP)
+        || !packet->isTypeOf(PROTO_IPv4)) return;
 
         int ss_idx = getStreamNumber(packet);
 
         if(ss_idx == -1) return;
 
-        struct Stream* ss = &(streams[ss_idx]);
+        Stream* ss = &ab_smap[ss_idx];
 
-        uint32_t srcIP = parseIPV4string(packet->getLayerOfType<pump::IPv4Layer>()->getSrcIpAddress().toString().c_str());
-        uint32_t dstIP = parseIPV4string(packet->getLayerOfType<pump::IPv4Layer>()->getDstIpAddress().toString().c_str());
-        uint16_t srcport = (uint16_t)ntohs(packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->portSrc);
-        uint16_t dstport = (uint16_t)ntohs(packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->portDst);
+        bool peer = isClient(packet, ss);
 
-        uint32_t seqnum = packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->sequenceNumber;
-        uint32_t acknum = packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->ackNumber;
-        uint16_t window = packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->windowSize;
-        seqnum = ((seqnum & 0xff000000) >> 24) + ((seqnum & 0xff0000) >> 8) + ((seqnum & 0xff00) << 8) + ((seqnum & 0xff) << 24);
-        acknum = ((acknum & 0xff000000) >> 24) + ((acknum & 0xff0000) >> 8) + ((acknum & 0xff00) << 8) + ((acknum & 0xff) << 24);
-
-        bool isFIN = (packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->finFlag == 1);
-        bool isSYN = (packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->synFlag == 1);
-        bool isRST = (packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->rstFlag == 1);
-        bool isACK = (packet->getLayerOfType<pump::TcpLayer>()->getTcpHeader()->ackFlag == 1);
-
-        if(!(ss->tlsFlags & F_SAW_SYN))
-        {
-            ss->client.IP = srcIP;
-            ss->client.Port = srcport;
-            ss->server.IP = dstIP;
-            ss->server.Port = dstport;
-            
-            ss->baseseq = seqnum;
-            ss->tlsFlags |= F_SAW_SYN; 
-        }
-
-        bool peer = (ss->client.IP == srcIP);
-        size_t paylen = packet->getLayerOfType<pump::TcpLayer>()->getLayerPayloadSize();
-
-        if(!(ss->tlsFlags & F_SAW_SYNACK) && isACK)
-        {
-            ss->baseack = seqnum;
-            ss->tlsFlags |= F_SAW_SYNACK;
-        }
-
-        // Get relative seq/ack numbers
-        seqnum -= (peer ? ss->baseseq : ss->baseack);
-        acknum -= (peer ? ss->baseack : ss->baseseq);
-
-        uint32_t nextseq = seqnum + paylen;
-
-        if (isSYN || isFIN)
-        {
-            nextseq += 1;
-        }
-
-        if(!(ss->tlsFlags & F_END_TCP_HS)
-        && isACK 
-        && paylen == 0 
-        && seqnum == 1 
-        && acknum == 1){
-            ss->tlsFlags |= F_END_TCP_HS;
-        }
-
-        struct Host* fwd = &(peer ? ss->client : ss->server);
-        struct Host* rev = &(peer ? ss->server : ss->client);
+        Flow* fwd = &(peer ? ss->client : ss->server);
+        Flow* rev = &(peer ? ss->server : ss->client);
 
         if(fwd->rcd_cnt + rev->rcd_cnt >= config->maxRcdpf) return;
 
-        uint8_t TCP_analysis = 0;
+        uint32_t seq = ntohl(packet->getLayer<pump::TcpLayer>()->getHeader()->rawseq);
+        uint32_t ack = ntohl(packet->getLayer<pump::TcpLayer>()->getHeader()->rawack);
+        uint16_t win = packet->getLayer<pump::TcpLayer>()->getHeader()->rawwin;
+
+        bool isFIN = (packet->getLayer<pump::TcpLayer>()->getHeader()->flag_fin == 1);
+        bool isSYN = (packet->getLayer<pump::TcpLayer>()->getHeader()->flag_syn == 1);
+        bool isRST = (packet->getLayer<pump::TcpLayer>()->getHeader()->flag_rst == 1);
+        bool isACK = (packet->getLayer<pump::TcpLayer>()->getHeader()->flag_ack == 1);
+
+        if (!(fwd->flags & F_BASE_SEQ_SET))
+        {
+            if (isSYN)
+            {
+                fwd->baseseq = seq;
+                fwd->flags |= isACK ? F_SAW_SYNACK : F_SAW_SYN;
+            }
+            else
+            {
+                fwd->baseseq = seq - 1;
+            }
+            fwd->flags |= F_BASE_SEQ_SET;
+        }
+
+        seq -= fwd->baseseq;
+        ack -= rev->baseseq;
+
+        size_t seglen = packet->getLayer<pump::TcpLayer>()->getLayerPayloadSize();
+
+        if (!(rev->flags & F_BASE_SEQ_SET) && isACK)
+        {
+            rev->baseseq = ack - 1;
+            rev->flags |= F_BASE_SEQ_SET;
+        }
+
+       fwd->a_flags = 0;
 
         // ZERO WINDOW PROBE
-        if (paylen == 1
-        && rev->win == 0
-        && fwd->seq == seqnum){
-            TCP_analysis |= TCP_ZERO_WINDOW_PROBE;
-            WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_PacketCount);
-            goto SeqUpdate;
-        }
-
-        // KEEP ALIVE
-        if (paylen <= 1
-        && !(isFIN || isSYN || isRST)
-        && fwd->seq - 1 == seqnum){
-            TCP_analysis |= TCP_KEEP_ALIVE;
-            WRITE_LOG("└─#KEEP ALIVE : %d", ab_PacketCount);
-            goto SeqUpdate;
-        }
-
-        // RETRANSMISSION
-        if ((paylen > 0 || isSYN || isFIN)
-        && seqnum < fwd->seq
-        && !(paylen > 1 && fwd->seq - 1  == seqnum)
-        && fwd->previousSeqs.find(seqnum) != fwd->previousSeqs.end()){
-            TCP_analysis |= TCP_RETRANSMISSION;
-            WRITE_LOG("└─#RETRANSMISSION : %d", ab_PacketCount);
-            return;
+        if (seglen == 1
+        && seq == fwd->nextseq
+        && rev->win == 0)
+        {
+            fwd->a_flags |= TCP_A_ZERO_WINDOW_PROBE;
+            WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_pkt_cnt);
+            goto retrans_check;
         }
 
         // LOST SEGMENT
-        if (fwd->seq
-        && seqnum > fwd->seq
-        && !isRST){
-            TCP_analysis |= TCP_LOST_PACKET;
-            WRITE_LOG("└─#LOST SEGMENT : %d", ab_PacketCount);
-        }
-
-        SeqUpdate:
-
-        fwd->win = window;
-        fwd->ack = acknum;
-
-        if (nextseq > fwd->seq || !fwd->seq)
+        if (fwd->nextseq
+        && seq > fwd->nextseq
+        && !isRST)
         {
-            if(!(TCP_analysis & TCP_ZERO_WINDOW_PROBE))
-            {
-                fwd->seq = nextseq;
-            }
+            fwd->a_flags |= TCP_A_LOST_PACKET;
+            WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
         }
+
+        // KEEP ALIVE
+        if (seglen <= 1
+        && !(isFIN || isSYN || isRST)
+        && fwd->nextseq - 1 == seq)
+        {
+            fwd->a_flags |= TCP_A_KEEP_ALIVE;
+            WRITE_LOG("└─#KEEP ALIVE : %d", ab_pkt_cnt);
+        }
+
+        retrans_check:
+
+        // RETRANSMISSION
+        if ((seglen > 0 || isSYN || isFIN)
+        && fwd->nextseq
+        && seq < fwd->nextseq
+        && !(seglen > 1 && fwd->nextseq - 1  == seq)
+        && fwd->previousSeqs.find(seq) != fwd->previousSeqs.end())
+        {
+            fwd->a_flags |= TCP_A_RETRANSMISSION;
+            WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
+            return;
+        }
+
+        uint32_t nextseq = seq + seglen;
+
+        if(isSYN || isFIN) 
+        {
+            nextseq+=1;
+        }
+
+        if ((nextseq > fwd->nextseq || !fwd->nextseq) 
+        && !(fwd->a_flags & TCP_A_ZERO_WINDOW_PROBE))
+        {
+            fwd->nextseq = nextseq;
+        }
+
+        fwd->win = win;
+        fwd->lastack = ack;
 
         // TCP PACKETS WITHOUT RECORD DATA
-        if(paylen == 0
+        if(seglen == 0
 	    || isSYN
-	    || !(ss->tlsFlags & F_END_TCP_HS)
-	    || (TCP_analysis & (TCP_ZERO_WINDOW_PROBE | TCP_KEEP_ALIVE))) return;
+	    || (fwd->a_flags & (TCP_A_ZERO_WINDOW_PROBE | TCP_A_KEEP_ALIVE))) return;
 
-        fwd->previousSeqs.insert(seqnum);
+        fwd->previousSeqs.insert(seq);
 
         struct RecordPointer* rcdPointer;
         seqack rseqack;
 
-        if (fwd->rootSeqAck.find(seqnum) != fwd->rootSeqAck.end())
+        if (fwd->rootSeqAck.find(seq) != fwd->rootSeqAck.end())
         {
-            rseqack = fwd->rootSeqAck[seqnum];
+            rseqack = fwd->rootSeqAck[seq];
             rcdPointer = &(fwd->rcdPointers[rseqack.first]);
-            WRITE_LOG("└──Read Record (continued) : %d (%d/%d)", ab_PacketCount, rcdPointer->pos, rcdPointer->len);
+            WRITE_LOG("└──Read Record (continued) : %d (%d/%d)", ab_pkt_cnt, rcdPointer->pos, rcdPointer->len);
         }
         else
         {
-            rseqack = seqack(seqnum, acknum);
-            fwd->rootSeqAck[seqnum] = rseqack;
-            fwd->rcdPointers[seqnum] = {0, 0, {}};
-            rcdPointer = &(fwd->rcdPointers[seqnum]);
+            rseqack = seqack(seq, ack);
+            fwd->rootSeqAck[seq] = rseqack;
+            fwd->rcdPointers[seq] = {0, 0, {}};
+            rcdPointer = &(fwd->rcdPointers[seq]);
         }
 
-        uint8_t* payld = packet->getLayerOfType<pump::TcpLayer>()->getLayerPayload();
+        uint8_t* payld = packet->getLayer<pump::TcpLayer>()->getLayerPayload();
         int p = 0;
 
-        for(int i = 0; i < (int)paylen; i++)
+        for(int i = 0; i < (int)seglen; i++)
         {
             if (rcdPointer->pos < 5)
             {
@@ -403,42 +351,42 @@ namespace pump
 
                     if (!(peer && fwd->rcd_cnt == 0 && (*(payld + i) != 1 || rcdPointer->hd[0] != 22)))
                     {
-                        ss->tlsFlags |= F_LOST_CLIENTHELLO;
+                        fwd->flags |= F_LOST_CLIENTHELLO;
                     }
                     else if(!(!peer && fwd->rcd_cnt == 0 && (*(payld + i) != 2 || rcdPointer->hd[0] != 22)))
                     {
-                        ss->tlsFlags |= F_LOST_SERVERHELLO;
+                        fwd->flags |= F_LOST_SERVERHELLO;
                     }
                     rcdPointer->len = 256*(int)rcdPointer->hd[3] + (int)rcdPointer->hd[4];
                 }
                 else
                 {
                     rcdPointer->pos = 0;
-                    if(TCP_analysis & TCP_LOST_PACKET)
+                    if(fwd->a_flags & TCP_A_LOST_PACKET)
                     {
-                        fwd->outoforderSeqs.insert(seqnum);
+                        fwd->outoforderSeqs.insert(seq);
                         sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, rseqack.first, (peer ? 'C' : 'S'));
                         FILE* fp = fopen(nameBUF, "w");
                         
                         if (fp == NULL)
-                            EXIT_WITH_RUNERROR("###ERROR : encounter an error while writing the misplaced segment from %s : %d", nameBUF, ab_PacketCount);
+                            EXIT_WITH_RUNERROR("###ERROR : encounter an error while writing the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
 
-                        fwrite(packet->getRawData(), packet->getRawDataLen(), 1, fp);
+                        fwrite(packet->getData(), packet->getDataLen(), 1, fp);
                         fclose(fp);
-                        WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_PacketCount);
+                        WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
                     }
                     break;
                 }
                 if(!(config->quitemode))
                 {
-                    char sIP[16], dIP[16];
+                    char cIP[16], sIP[16];
 
-                    sprintf(sIP, "%d.%d.%d.%d", (srcIP >> 24) & 0xFF, (srcIP >> 16) & 0xFF, (srcIP >>  8) & 0xFF, (srcIP) & 0xFF);
-                    sprintf(dIP, "%d.%d.%d.%d", (dstIP >> 24) & 0xFF, (dstIP >> 16) & 0xFF, (dstIP >>  8) & 0xFF, (dstIP) & 0xFF);
-                    
-                    printf("[Client] %s:%d  ", (peer ? sIP : dIP), (peer ? srcport : dstport));
-                    for (int j = strlen((peer ? sIP : dIP)); j < 15; j++) printf(" ");
-                    uint16_t temp = (peer ? srcport : dstport);
+                    parseIPV4(cIP, ss->client.ip);
+                    parseIPV4(sIP, ss->server.ip);
+
+                    printf("[Client] %s:%d  ", cIP, ss->client.port);
+                    for (int j = strlen(cIP); j < 15; j++) printf(" ");
+                    uint16_t temp = ss->client.port;
                     for (; temp < 10000; temp *= 10) printf(" ");
                     if(!peer) printf("<"); 
                     uint16_t typelen = (recordType.at(rcdPointer->hd[0])).length() 
@@ -448,10 +396,10 @@ namespace pump
                         (rcdPointer->hd[0] != 22 ? "" : (handshakeType.find(*(payld + i)) == handshakeType.end() ? "(encrypted)" : (handshakeType.at(*(payld + i))).c_str())));
                     for (int j = 0; j < (50-typelen+1)/2 + (!peer ? 0 : -1); j++) printf("-");
                     if(peer) printf(">"); 
-                    for (int j = strlen((peer ? dIP : sIP)); j < 15; j++) printf(" ");
-                    temp = (peer ? dstport : srcport);
+                    for (int j = strlen(sIP); j < 15; j++) printf(" ");
+                    temp = ss->server.port;
                     for (; temp < 10000; temp *= 10) printf(" ");
-                    printf("%s:%d [Server]\n", (peer ? dIP : sIP), (peer ? dstport : srcport));
+                    printf("%s:%d [Server]\n", sIP, ss->server.port);
                 }
                 if(config->outputFileTo != "")
                 {
@@ -469,7 +417,7 @@ namespace pump
             {
                 rcdPointer->pos = 0;
                 (fwd->rcd_cnt)++;
-                ab_RecordCount++;
+                ab_rcd_cnt++;
                 if(config->outputFileTo != "")
                 {
                     sprintf(pktBUF+(p++), "\n");
@@ -477,8 +425,8 @@ namespace pump
                     writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
                     p = 0;
                 }
-                WRITE_LOG("└──Read Record : %d (%d)", ab_PacketCount, rcdPointer->len);
-                if(ab_RecordCount == config->maxRcd)
+                WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rcdPointer->len);
+                if(ab_rcd_cnt == config->maxRcd)
                 {
                     raise(SIGINT);
                     return;
@@ -497,11 +445,11 @@ namespace pump
                     pktBUF[p] = '\0';
                     writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
                 }
-                WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_PacketCount, rcdPointer->pos, rcdPointer->len);
+                WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_pkt_cnt, rcdPointer->pos, rcdPointer->len);
             }
             else
             {
-                WRITE_LOG("└──Maybe a part of record : %d, we should check on next packet (%d)", ab_PacketCount, rcdPointer->pos);
+                WRITE_LOG("└──Maybe a part of record : %d, we should check on next packet (%d)", ab_pkt_cnt, rcdPointer->pos);
             }
             fwd->rootSeqAck[nextseq] = rseqack;
         }
@@ -518,7 +466,7 @@ namespace pump
         FILE* fp = fopen(nameBUF, "r");
         
         if (fp == NULL)
-            EXIT_WITH_RUNERROR("###ERROR : encounter an error while loading the misplaced segment from %s : %d", nameBUF, ab_PacketCount);
+            EXIT_WITH_RUNERROR("###ERROR : encounter an error while loading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
 
         fseek(fp, 0, SEEK_END);
         long fsize = ftell(fp);
@@ -526,9 +474,9 @@ namespace pump
         uint8_t* pData = new uint8_t[fsize];
         size_t res = fread(pData, 1, fsize, fp);
         if (res != (size_t)fsize)
-            EXIT_WITH_RUNERROR("###ERROR : encounter an error while reading the misplaced segment from %s : %d", nameBUF, ab_PacketCount);
+            EXIT_WITH_RUNERROR("###ERROR : encounter an error while reading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
 
-        pump::Packet reservedPacket = pump::Packet(pData, fsize, packet->getPacketTimeStamp(), true);
+        pump::Packet reservedPacket = pump::Packet(pData, fsize, packet->getTimeStamp(), true);
 
         fwd->outoforderSeqs.erase(nextseq);
 
@@ -536,41 +484,40 @@ namespace pump
         parsePacket(&reservedPacket, config);
     }
 
-    void Assembly::managePacket(pump::Packet* packet, struct CaptureConfig* config)
+    void Assembly::managePacket(pump::Packet* packet, CaptureConfig* config)
     {
-        struct timeval ref_tv = packet->getPacketTimeStamp();
-        uint32_t pk_len = packet->getRawDataLen();
-        if(ab_PacketCount == 0) time_update(&(base_tv), &ref_tv);
-        int64_t delta_time = time_diff(&ref_tv, &(base_tv));
+        timeval ref_tv = packet->getTimeStamp();
+        uint32_t pk_len = packet->getDataLen();
+        if(ab_pkt_cnt == 0) time_update(&ab_base_tv, &ref_tv);
+        int64_t delta_time = time_diff(&ref_tv, &ab_base_tv);
 
         gettimeofday(&curr_tv, NULL);
-        int64_t run_time = time_diff(&ref_tv, &(base_tv));
 
-        if (ab_PacketCount >= config->maxPacket || run_time/1000000 >= (int64_t)config->maxTime)
+        if (ab_pkt_cnt >= config->maxPacket 
+        || time_diff(&ref_tv, &ab_base_tv)/1000000 >= (int64_t)config->maxTime)
         {
             raise(SIGINT);
             return;
         }
 
-        ab_TotalByte += pk_len;
-		ab_PacketCount++;
+        ab_totalbytes += pk_len;
+        ab_pkt_cnt++;
 
-        if (delta_time == 0 || time_diff(&ref_tv, &(print_tv)) >= 31250)
+        if (delta_time == 0 || time_diff(&ref_tv, &ab_print_tv) >= 31250)
         {
             struct rusage r_usage;
             getrusage(RUSAGE_SELF, &r_usage);
             if(r_usage.ru_maxrss > MEMORY_LIMIT)
                 EXIT_WITH_RUNERROR("###ERROR : The process consume too much memory");
 
-            if(config->quitemode) print_progressM(ab_PacketCount);
-            time_update(&(print_tv), &ref_tv);
+            if(config->quitemode) print_progressM(ab_pkt_cnt);
+            time_update(&ab_print_tv, &ref_tv);
         }
 
         parsePacket(packet, config);
-
     }
 
-    void Assembly::mergeRecord(struct CaptureConfig* config)
+    void Assembly::mergeRecord(CaptureConfig* config)
     {
         char strbuf[maxbuf];
         uint32_t pos, valid_rcd = 0;
@@ -590,27 +537,29 @@ namespace pump
         if (fw == NULL)
             EXIT_WITH_RUNERROR("###ERROR : Could not open ouput csv file");
 
-        for(mit = streams.begin(); mit != streams.end(); mit++)
+        for(mit = ab_smap.begin(); mit != ab_smap.end(); mit++)
         {
-            if(ab_shouldStop) stop_signal_callback_handler(SIGINT);
+            if(ab_stop) stop_signal_callback_handler(SIGINT);
 
             uint32_t ss_idx = mit->first;
-            struct Stream* ss = &(mit->second);
+            Stream* ss = &mit->second;
 
-            struct timeval ref_tv;
+            timeval ref_tv;
             gettimeofday(&ref_tv, NULL);
 
-            if (ss_idx == 0 || ss_idx + 1 == ab_StreamCount || time_diff(&ref_tv, &(print_tv)) >= 31250)
+            if (ss_idx == 0 
+            || ss_idx + 1 == ab_flow_cnt 
+            || time_diff(&ref_tv, &ab_print_tv) >= 31250)
             {
-                print_progressA(ss_idx + 1, ab_StreamCount);
-                time_update(&(print_tv), &ref_tv);
+                print_progressA(ss_idx + 1, ab_flow_cnt);
+                time_update(&ab_print_tv, &ref_tv);
             }
 
-            struct Host* fwd = &(ss->client);
-            struct Host* rev = &(ss->server);
+            Flow* fwd = &ss->client;
+            Flow* rev = &ss->server;
 
-            sprintf(cIP, "%d.%d.%d.%d", (fwd->IP >> 24) & 0xFF, (fwd->IP >> 16) & 0xFF, (fwd->IP >>  8) & 0xFF, (fwd->IP) & 0xFF);
-            sprintf(sIP, "%d.%d.%d.%d", (rev->IP >> 24) & 0xFF, (rev->IP >> 16) & 0xFF, (rev->IP >>  8) & 0xFF, (rev->IP) & 0xFF);
+            parseIPV4(cIP, fwd->ip);
+            parseIPV4(sIP, rev->ip);
 
             sni_chk = false;
 
@@ -683,7 +632,7 @@ namespace pump
 
                         valid_rcd++;
                         fprintf(fw, "%s:%d,%s:%d,%s,%.8d,%d\n",
-                                cIP, fwd->Port, sIP, rev->Port, (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
+                                cIP, fwd->port, sIP, rev->port, (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
                     }
 
                     fprintf(fw, "%c", (peer ? 'C' : 'S'));
@@ -703,7 +652,13 @@ namespace pump
         fclose(fw);
         if(valid_rcd > 0) printf("\n");
         printf("**Total SSL flow#**========================================= (%u)", valid_rcd);
-        streams.clear();
+    }
+
+    void Assembly::close()
+    {
+        ab_smap.clear();
+        ab_initiated.clear();
+        ab_flowtable.clear();
     }
 
 }

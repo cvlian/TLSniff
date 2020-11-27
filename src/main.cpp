@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/stat.h> 
 
+#include "utils.h"
 #include "reader.h"
 #include "handler.h"
 #include "assembly.h"
@@ -37,7 +38,7 @@ static struct option TLSniffOptions[] =
     {0, 0, 0, 0}
 };
 
-struct TLSPacketArrivedData
+struct PacketArrivedData
 {
     pump::Assembly* assembly;
     struct pump::CaptureConfig* config;
@@ -71,7 +72,7 @@ void printUsage()
 
 void packetArrive(pump::Packet* packet, pump::LiveReader* rdr, void* cookie)
 {
-    TLSPacketArrivedData* data = (TLSPacketArrivedData*)cookie;
+    PacketArrivedData* data = (PacketArrivedData*)cookie;
     data->assembly->managePacket(packet, data->config);
 }
 
@@ -80,7 +81,7 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
     if (!rdr->open())
         EXIT_WITH_CONFERROR("###ERROR : Could not open the device");
 
-    TLSPacketArrivedData data;
+    PacketArrivedData data;
     pump::Assembly assembly(init_tv);
     data.assembly = &assembly;
     data.config = config;
@@ -91,7 +92,6 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
         sleep(1);
 
     rdr->stopCapture();
-    rdr->close();
 
     if(!(config->quitemode)) printf("\n");
     pump::print_progressM(assembly.getTotalPacket());
@@ -102,23 +102,25 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
         assembly.registerEvent();
         assembly.mergeRecord(config);
     }
+
+    assembly.close();
+    delete rdr;
 }
 
 void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
 {
-    pump::PcapReader rdr(pcapFile.c_str());
-    if (!rdr.open())
+    pump::PcapReader* rdr = pump::PcapReader::getReader(pcapFile.c_str());
+    
+    if (!rdr->open())
         EXIT_WITH_CONFERROR("###ERROR : Could not open input pcap file");
 
     pump::Assembly assembly(init_tv);
     pump::Packet packet;
 
-    while(rdr.getNextPacket(packet) && !assembly.isTerminated())
+    while(rdr->getNextPacket(packet) && !assembly.isTerminated())
     {
         assembly.managePacket(&packet, config);
     }
-
-    rdr.close();
 
     if(!(config->quitemode)) printf("\n");
     pump::print_progressM(assembly.getTotalPacket());
@@ -129,6 +131,9 @@ void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
         assembly.registerEvent();
         assembly.mergeRecord(config);
     }
+
+    assembly.close();
+    delete rdr;
 }
 
 int main(int argc, char* argv[])

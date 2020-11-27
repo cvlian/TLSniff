@@ -16,29 +16,32 @@
 #include <utility>
 
 #include "packet.h"
-#include "layer-ip4.h"
+#include "layer-ip.h"
 #include "layer-tcp.h"
 
-/* TLS session Flags */
-#define F_SAW_SYN                0x0001
-#define F_SAW_SYNACK             0x0002
-#define F_END_TCP_HS             0x0004
-#define F_SAW_FIN                0x0008
-#define F_LOST_CLIENTHELLO       0x0010
-#define F_LOST_SERVERHELLO       0x0020
 
-/* TCP analysis flags */
-#define TCP_ZERO_WINDOW_PROBE       0x01
-#define TCP_LOST_PACKET             0x02
-#define TCP_KEEP_ALIVE              0x04
-#define TCP_WINDOW_UPDATE           0x08
-#define TCP_RETRANSMISSION          0x10
+#define F_SAW_SYN                 0x1
+#define F_SAW_SYNACK              0x2
+#define F_END_SYN_HS              0x4
+#define F_END_FIN_HS              0x8
+#define F_BASE_SEQ_SET           0x10
+#define F_LOST_CLIENTHELLO       0x20
+#define F_LOST_SERVERHELLO       0x40
 
-static const uint32_t IN_LIMIT = 1073741824u;
-static const uint32_t FNV_PRIME = 16777619u;
-static const uint32_t OFFSET_BASIS = 2166136261u;
-static const int maxbuf = 262144;
-static const long MEMORY_LIMIT = 8*1024*1024;
+#define TCP_A_ACK_LOST_PACKET                0x1
+#define TCP_A_DUPLICATE_ACK                  0x2
+#define TCP_A_KEEP_ALIVE                     0x4
+#define TCP_A_KEEP_ALIVE_ACK                 0x8
+#define TCP_A_LOST_PACKET                   0x10
+#define TCP_A_FAST_RETRANSMISSION           0x20
+#define TCP_A_OUT_OF_ORDER                  0x40
+#define TCP_A_SPURIOUS_RETRANSMISSION       0x80
+#define TCP_A_RETRANSMISSION               0x100
+#define TCP_A_WINDOW_FULL                  0x200
+#define TCP_A_WINDOW_UPDATE                0x400
+#define TCP_A_ZERO_WINDOW                  0x800
+#define TCP_A_ZERO_WINDOW_PROBE           0x1000
+#define TCP_A_ZERO_WINDOW_PROBE_ACK       0x2000
 
 static const std::map<uint8_t, std::string> recordType = {
     { 20, "Change Cipher Spec" },
@@ -75,12 +78,6 @@ typedef std::pair<uint32_t, uint32_t> seqack;
 namespace pump
 {
 
-    struct ScalarBuffer
-    {
-        uint8_t* buffer;
-        size_t len;
-    };
-
     struct CaptureConfig
     {
         uint32_t maxPacket;
@@ -98,68 +95,62 @@ namespace pump
         uint8_t hd[5];
     };
 
-    struct Host {
-        uint32_t IP;
-        uint16_t Port;
-        uint16_t win;
-        uint32_t seq;
-        uint32_t ack;
-        uint16_t rcd_cnt;
-        std::set<uint32_t> outoforderSeqs;
-        std::set<uint32_t> previousSeqs;
-        std::map<uint32_t, seqack> rootSeqAck;
-        std::map<uint32_t, RecordPointer> rcdPointers;
+    struct Flow {
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        uint32_t win = 0xFFFFFFFF;
+        uint32_t baseseq = 0;
+        uint16_t flags = 0;
+        uint16_t a_flags = 0;
+        uint32_t nextseq = 0;
+        uint32_t lastack = 0;
+        uint32_t max_seq_acked = 0;
+        uint32_t dup_ack_cnt = 0;
+        uint32_t seg_idx = 0;
+        uint32_t push_bytes = 0;
+        uint16_t rcd_cnt = 0;
+        std::set<uint32_t> outoforderSeqs = {};
+        std::set<uint32_t> previousSeqs = {};
+        std::map<uint32_t, seqack> rootSeqAck = {};
+        std::map<uint32_t, RecordPointer> rcdPointers = {};
     };
 
     struct Stream {
-        uint16_t tlsFlags;
-        uint32_t baseseq;
-        uint32_t baseack;
-        struct Host client;
-        struct Host server;
+        Flow client;
+        Flow server;
     };
-
-    void print_progressM(uint32_t c);
-
-    void print_progressA(uint32_t s, uint32_t ts);
 
     void writeTLSrecord(const char* dir, int ss_idx, bool peer, uint32_t rootSeq);
 
-    uint32_t parseIPV4string(const char* ipAddress);
-
-    uint32_t fnv_hash(ScalarBuffer vec[], size_t vecSize);
-
     uint32_t hashStream(pump::Packet* packet);
 
-    int64_t time_diff(struct timeval* etv, struct timeval* stv);
+    bool isTcpSyn(pump::Packet* packet);
 
-    void time_update(struct timeval* tv1, struct timeval* tv2);
+    bool isClient(pump::Packet* packet, Stream* ss);
 
     class Assembly
     {
 
         private:
 
-            uint32_t ab_PacketCount;
-            uint32_t ab_StreamCount;
-            uint32_t ab_RecordCount;
-            uint64_t ab_TotalByte;
+            uint32_t ab_pkt_cnt;
+            uint32_t ab_flow_cnt;
+            uint32_t ab_rcd_cnt;
+            uint64_t ab_totalbytes;
 
-            bool ab_shouldStop;
+            bool ab_stop;
 
-            struct timeval init_tv, base_tv, print_tv;
+            struct timeval ab_init_tv, ab_base_tv, ab_print_tv;
 
-            std::map<uint32_t, int> ab_FlowTable;
+            std::map<uint32_t, int> ab_flowtable;
 
-            std::map<uint32_t, bool> ab_TcpFlowTable;
+            std::map<uint32_t, bool> ab_initiated;
 
-            std::map<uint32_t, Stream> streams;
+            std::map<uint32_t, Stream> ab_smap;
 
-            int addNewStream();
+            int addNewStream(pump::Packet* packet);
 
             int getStreamNumber(pump::Packet* packet);
-
-            bool isTcpSyn(pump::Packet* packet);
 
         public:
 
@@ -169,23 +160,25 @@ namespace pump
 
             void registerEvent();
 
-            uint32_t getTotalPacket() { return ab_PacketCount; };
+            uint32_t getTotalPacket() { return ab_pkt_cnt; };
 
-            uint32_t getTotalStream() { return ab_StreamCount; }
+            uint32_t getTotalStream() { return ab_flow_cnt; }
 
-            uint32_t getTotalRecord() { return ab_RecordCount; }
+            uint32_t getTotalRecord() { return ab_rcd_cnt; }
 
-            uint64_t getTotalByteLen() { return ab_TotalByte; }
+            uint64_t getTotalByteLen() { return ab_totalbytes; }
 
-            timeval* getStartTime() { return &init_tv; } 
+            timeval* getStartTime() { return &ab_init_tv; } 
 
-            bool isTerminated() {return ab_shouldStop; }
+            bool isTerminated() {return ab_stop; }
 
-            void parsePacket(pump::Packet* packet, struct CaptureConfig* config);
+            void parsePacket(pump::Packet* packet, CaptureConfig* config);
 
-            void managePacket(pump::Packet* packet, struct CaptureConfig* config);
+            void managePacket(pump::Packet* packet, CaptureConfig* config);
 
-            void mergeRecord(struct CaptureConfig* config);
+            void mergeRecord(CaptureConfig* config);
+
+            void close();
 
     };
 

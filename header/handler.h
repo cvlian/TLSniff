@@ -55,8 +55,8 @@ namespace pump
 
         private:
 
-            EventHandlerCallback h_InterruptedHandler;
-            void* h_InterruptedCookie;
+            EventHandlerCallback h_interrupt_handler;
+            void* h_interrupt_cookie;
 
             static void handlerRoutine(int signum);
 

@@ -10,72 +10,72 @@
 
 #include "layer.h"
 
-#pragma pack(push,1)
-    struct tcphdr {
-        uint16_t portSrc;  
-        uint16_t portDst;
-        uint32_t sequenceNumber;
-        uint32_t ackNumber;
-#if (BYTE_ORDER == LITTLE_ENDIAN)
-        uint16_t reserved:4,
-        dataOffset:4,
-        finFlag:1,
-        synFlag:1,
-        rstFlag:1,
-        pshFlag:1,
-        ackFlag:1,
-        urgFlag:1,
-        eceFlag:1,
-        cwrFlag:1;
-#elif (BYTE_ORDER == BIG_ENDIAN)
-        uint16_t dataOffset:4,
-        reserved:4,
-        cwrFlag:1,
-        eceFlag:1,
-        urgFlag:1,
-        ackFlag:1,
-        pshFlag:1,
-        rstFlag:1,
-        synFlag:1,
-        finFlag:1;
-#else
-#error	"Endian is not LE nor BE..."
-#endif
-        uint16_t	windowSize;
-        uint16_t	headerChecksum;
-        uint16_t	urgentPointer;
-};
-#pragma pack(pop)
+#define TCPOPT_EOL              0
+#define TCPOPT_NOP              1
+#define TCPOPT_MSS              2
+#define TCPOPT_WINSCALE         3
+#define TCPOPT_SACK_PERM        4
+#define TCPOPT_SACK             5
+#define TCPOPT_TIMESTAMP        8
+#define TCPOPT_TCHECK           18
+#define TCPOPT_SCPS             20
+#define TCPOPT_SNACK            21
+#define TCPOPT_RECBOUND         22
+#define TCPOPT_CORREXP          23
+#define TCPOPT_SNAP             24
+#define TCPOPT_COMFILTER        26
+#define TCPOPT_QS               27
+#define TCPOPT_USER_TO          28
+#define TCPOPT_AUOP             29
+#define TCPOPT_MPTCP            30
+#define TCPOPT_FASTCOOKIE       34
+#define TCPOPT_ENNEGO           69
+#define TCPOPT_EXP_FD           253
+#define TCPOPT_EXP_FE           254
+#define TCPOPT_Unknown          255
 
 namespace pump
 {
+
+    typedef struct _tcp_hdr 
+    {
+        uint16_t sport;  
+        uint16_t dport;
+        uint32_t rawseq;
+        uint32_t rawack;
+        uint16_t reserved:4,
+                 dataoffset:4,
+                 flag_fin:1,
+                 flag_syn:1,
+                 flag_rst:1,
+                 flag_psh:1,
+                 flag_ack:1,
+                 flag_urg:1,
+                 flag_ece:1,
+                 flag_cwr:1;
+        uint16_t rawwin;
+        uint16_t checksum;
+        uint16_t urg_pt;
+    } tcp_hdr;
 
     class TcpLayer : public Layer
     {
 
         public:
 
-            TcpLayer(uint8_t* data, size_t dataLen, Layer* prevLayer) : Layer(data, dataLen, prevLayer) { l_Protocol = PROTO_TCP; };
+            TcpLayer(uint8_t* data, size_t datalen, Layer* prev_layer) : Layer(data, datalen, prev_layer) { l_proto = PROTO_TCP; }
 
-            void parseNextLayer();
+            virtual ~TcpLayer() {};
 
-            uint8_t getOsiModelLayer() const { return OSI_TransportLayer; }
+            void dissectData();
 
-            tcphdr* getTcpHeader() const { return (tcphdr*)l_Data; }
+            tcp_hdr* getHeader() const { return (tcp_hdr*)l_data; }
 
-            size_t getHeaderLen() const { return getTcpHeader()->dataOffset*4 ;}
+            size_t getHeaderLen() const { return getHeader()->dataoffset*4; }
 
-            static inline bool isDataValid(const uint8_t* data, size_t dataLen);
+            static bool isValidLayer(const uint8_t* data, size_t datalen);
 
     };
-
-    bool TcpLayer::isDataValid(const uint8_t* data, size_t dataLen)
-    {
-        const tcphdr* hdr = reinterpret_cast<const tcphdr*>(data);
-        return dataLen >= sizeof(tcphdr)
-        && hdr->dataOffset >= 5 /* the minimum TCP header size */
-        && dataLen >= hdr->dataOffset * sizeof(uint32_t);
-    }
     
 }
 

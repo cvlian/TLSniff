@@ -15,15 +15,28 @@
 namespace pump
 {
 
-    PcapReader::PcapReader(const char* pcapFileName) : Reader()
+    char msg[PCAP_ERRBUF_SIZE];
+
+    PcapReader::PcapReader(const char* pcapfile) : Reader()
     {
-        prdr_Name = new char[strlen(pcapFileName)+1];
-        strcpy(prdr_Name, pcapFileName);
+        int pcapname_len = strlen(pcapfile) + 1;
+        prdr_datasrc = (char*)malloc(pcapname_len);
+        strncpy(prdr_datasrc, pcapfile, pcapname_len);
+    }
+
+    PcapReader* PcapReader::getReader(const char* pcapfile)
+    {
+        const char* file_extension = strrchr(pcapfile, '.');
+
+        if (file_extension == NULL || strcmp(file_extension, ".pcap") != 0)
+            EXIT_WITH_CONFERROR("###ERROR : File extension should be a .pcap");
+
+        return new PcapReader(pcapfile);
     }
 
     bool PcapReader::open()
     {
-        if (rdr_PcapDescriptor != NULL)
+        if (rdr_descriptor != NULL)
         {
             WRITE_LOG("###WARNING : PcapReader is already opened");
             return true;
@@ -31,43 +44,42 @@ namespace pump
 
         char errbuf[PCAP_ERRBUF_SIZE];
 
-        rdr_PcapDescriptor = pcap_open_offline(prdr_Name, errbuf);
-        if (rdr_PcapDescriptor == NULL)
+        rdr_descriptor = pcap_open_offline(prdr_datasrc, errbuf);
+        if (rdr_descriptor == NULL)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not open a pcap file by provided name");
         }
 
-        prdr_LinkLayerType = static_cast<uint16_t>(pcap_datalink(rdr_PcapDescriptor));
+        prdr_linktype = static_cast<uint16_t>(pcap_datalink(rdr_descriptor));
 
-        rdr_ReaderOn = true;
-        WRITE_LOG("===PcapReader is now scheduled to scan '%s'", prdr_Name);
+        rdr_on = true;
+        WRITE_LOG("===PcapReader is now scheduled to scan '%s'", prdr_datasrc);
 
         return true;
     }
     
     bool PcapReader::getNextPacket(Packet& packet)
     {
-        packet.clear();
-        if (rdr_PcapDescriptor == NULL)
+        if (rdr_descriptor == NULL)
         {
-            EXIT_WITH_RUNERROR("###ERROR : PcapReader '%s' is not opened", prdr_Name);
+            EXIT_WITH_RUNERROR("###ERROR : PcapReader '%s' is not opened", prdr_datasrc);
         }
-        
-        pcap_pkthdr pkthdr;
-        const uint8_t* pPacketData = pcap_next(rdr_PcapDescriptor, &pkthdr);
 
-        if (pPacketData == NULL)
+        pcap_pkthdr pkthdr;
+        const uint8_t* rawdata = pcap_next(rdr_descriptor, &pkthdr);
+
+        if (rawdata == NULL)
         {
-            WRITE_LOG("===PcapReader '%s' encountered End-of-File (EOF)", prdr_Name);
+            WRITE_LOG("===PcapReader '%s' encountered End-of-File (EOF)", prdr_datasrc);
             return false;
         }
         
-        uint8_t* pMyPacketData = new uint8_t[pkthdr.caplen];
-        memcpy(pMyPacketData, pPacketData, pkthdr.caplen);
+        uint8_t* data = new uint8_t[pkthdr.caplen];
+        memcpy(data, rawdata, pkthdr.caplen);
 
-        if (!packet.setRawData(pMyPacketData, pkthdr.caplen, pkthdr.ts, static_cast<uint16_t>(prdr_LinkLayerType)))
+        if (!packet.setData(data, pkthdr.caplen, pkthdr.ts, static_cast<uint16_t>(prdr_linktype)))
         {
-            EXIT_WITH_RUNERROR("###ERROR : PcapReader '%s' is failed to read raw packet data", prdr_Name);
+            EXIT_WITH_RUNERROR("###ERROR : PcapReader '%s' is failed to read raw packet data", prdr_datasrc);
         }
 
         return true;
@@ -75,47 +87,44 @@ namespace pump
 
     void PcapReader::close()
     {
-        if (prdr_Name != NULL)
-            delete [] prdr_Name;
-
-        if (rdr_PcapDescriptor != NULL)
+        if (prdr_datasrc != NULL)
         {
-            pcap_close(rdr_PcapDescriptor);
-            rdr_PcapDescriptor = NULL;
+            free(prdr_datasrc);
         }
 
-        rdr_ReaderOn = false;
+        if (rdr_descriptor != NULL)
+        {
+            pcap_close(rdr_descriptor);
+            rdr_descriptor = NULL;
+        }
+
+        rdr_on = false;
     }
 
-    pcap_t* LiveReader::doOpen()
+    pcap_t* LiveReader::LiveInit()
     {
-        char errbuf[PCAP_ERRBUF_SIZE] = {'\0'};
-        pcap_t* pcap = pcap_create(lrdr_Name, errbuf);
+        pcap_t* pcap = pcap_create(lrdr_datasrc, msg);
         if (!pcap)
         {
-            EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", errbuf); 
+            EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", msg); 
         }
         
-        int ret = pcap_set_snaplen(pcap, DEFAULT_SNAPLEN);
-        if (ret != 0)
+        if (pcap_set_snaplen(pcap, DEFAULT_SNAPLEN) != 0)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", pcap_geterr(pcap)); 
         }
 
-        ret = pcap_set_promisc(pcap, DEFAULT_DEVMODE);
-        if (ret != 0)
+        if (pcap_set_promisc(pcap, DEFAULT_DEVMODE) != 0)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", pcap_geterr(pcap));
         }
 
-        ret = pcap_set_timeout(pcap, DEFAULT_TIMEOUT);
-        if (ret != 0)
+        if (pcap_set_timeout(pcap, DEFAULT_TIMEOUT) != 0)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", pcap_geterr(pcap));
         }
 
-        ret = pcap_activate(pcap);
-        if (ret != 0)
+        if (pcap_activate(pcap) != 0)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not access the network interface : %s", pcap_geterr(pcap));
         }
@@ -123,45 +132,47 @@ namespace pump
         if (pcap)
         {
             int dlt = pcap_datalink(pcap);
-            lrdr_LinkLayerType = (uint16_t)dlt;
+            lrdr_linktype = (uint16_t)dlt;
         }
         return pcap;
     }
 
     void* LiveReader::captureThreadMain(void* ptr)
     {
-        LiveReader* pThis = (LiveReader*)ptr;
+        LiveReader* rdr = (LiveReader*)ptr;
 
-        if (pThis == NULL) exit(1);
+        if (rdr == NULL)
+            exit(1);
 
-        while (!pThis->lrdr_StopThread)
+        while (!rdr->lrdr_on_stop)
         {
-            pcap_dispatch(pThis->rdr_PcapDescriptor, -1, onPacketArrives, (uint8_t*)pThis);
+            pcap_dispatch(rdr->rdr_descriptor, -1, onPacketArrival, (uint8_t*)rdr);
         }
 
         return 0;
     }
 
-    void LiveReader::onPacketArrives(uint8_t* user, const struct pcap_pkthdr* pkthdr, const uint8_t* packet)
+    void LiveReader::onPacketArrival(uint8_t* user, const struct pcap_pkthdr* pkt_hdr, const uint8_t* packet)
     {
-        LiveReader* pThis = (LiveReader*)user;
+        LiveReader* rdr = (LiveReader*)user;
 
-        if (pThis == NULL) exit(1);
+        if (rdr == NULL)
+            exit(1);
 
-        Packet Packet(packet, pkthdr->caplen, pkthdr->ts, false, pThis->getLinkLayerType());
+        Packet Packet(packet, pkt_hdr->caplen, pkt_hdr->ts, false, rdr->getLinkType());
 
-        if (pThis->lrdr_cbOnPacketArrives != NULL)
-            pThis->lrdr_cbOnPacketArrives(&Packet, pThis, pThis->lrdr_cbOnPacketArrivesUserCookie);
+        if (rdr->lrdr_pkt_arrival != NULL)
+            rdr->lrdr_pkt_arrival(&Packet, rdr, rdr->lrdr_pkt_arrival_cookie);
     }
 
     LiveReader::LiveReader(pcap_if_t* pInterface, bool calculateMTU, bool calculateMacAddress, bool calculateDefaultGateway) : Reader()
     {
-        lrdr_Name = NULL;
-        lrdr_LinkLayerType = LINKTYPE_ETHERNET;
+        lrdr_datasrc = NULL;
+        lrdr_linktype = LINKTYPE_ETHERNET;
 
-        int strLength = strlen(pInterface->name)+1;
-        lrdr_Name = new char[strLength];
-        strncpy((char*)lrdr_Name, pInterface->name, strLength);
+        int ifacename_len = strlen(pInterface->name)+1;
+        lrdr_datasrc = (char*)malloc(ifacename_len);
+        strncpy((char*)lrdr_datasrc, pInterface->name, ifacename_len);
 
         while (pInterface->addresses != NULL)
         {
@@ -172,109 +183,110 @@ namespace pump
                 sockaddr2string(pInterface->addresses->addr, addrAsString);
             }
         }
-        lrdr_CaptureThreadOn = false;
-        lrdr_StopThread = false;
-        lrdr_cbOnPacketArrives = NULL;
-        lrdr_cbOnPacketArrivesUserCookie = NULL;
+        lrdr_on_capture = false;
+        lrdr_on_stop = false;
+        lrdr_pkt_arrival = NULL;
+        lrdr_pkt_arrival_cookie = NULL;
     }
     
     bool LiveReader::open()
     {
-        if (rdr_PcapDescriptor != NULL)
+        if (rdr_descriptor != NULL)
         {
             WRITE_LOG("###WARNING : LiveReader is already opened");
             return true;
         }
 
-        rdr_PcapDescriptor = doOpen();
-        if (rdr_PcapDescriptor == NULL)
+        rdr_descriptor = LiveInit();
+        if (rdr_descriptor == NULL)
         {
             EXIT_WITH_CONFERROR("###ERROR : Could not find interface by provided name");
         }
 
-        rdr_ReaderOn = true;
-        WRITE_LOG("===PcapReader is now scheduled to scan '%s'", lrdr_Name);
+        rdr_on = true;
+        WRITE_LOG("===PcapReader is now scheduled to scan '%s'", lrdr_datasrc);
         return true;
     }
 
-    void LiveReader::startCapture(OnPacketArrivesCallback onPacketArrives, void* onPacketArrivesUserCookie)
+    void LiveReader::startCapture(OnPacketArrival onPacketArrival, void* onPacketArrivalCookie)
     {
-        if (!rdr_ReaderOn || rdr_PcapDescriptor == NULL)
+        if (!rdr_on || rdr_descriptor == NULL)
         {
-            EXIT_WITH_RUNERROR("###ERROR : LiveReader '%s' is not opened", lrdr_Name);
+            EXIT_WITH_RUNERROR("###ERROR : LiveReader '%s' is not opened", lrdr_datasrc);
         }
 
-        if (lrdr_CaptureThreadOn)
+        if (lrdr_on_capture)
         {
-            EXIT_WITH_RUNERROR("###ERROR : LiveReader '%s' is already capturing packets", lrdr_Name);
+            EXIT_WITH_RUNERROR("###ERROR : LiveReader '%s' is already capturing packets", lrdr_datasrc);
         }
 
-        lrdr_cbOnPacketArrives = onPacketArrives;
-        lrdr_cbOnPacketArrivesUserCookie = onPacketArrivesUserCookie;
+        lrdr_pkt_arrival = onPacketArrival;
+        lrdr_pkt_arrival_cookie = onPacketArrivalCookie;
 
-        int err = pthread_create(&lrdr_CaptureThread, NULL, captureThreadMain, (void*)this);
+        int err = pthread_create(&lrdr_thread_capture, NULL, captureThreadMain, (void*)this);
         if (err != 0)
         {
-            EXIT_WITH_RUNERROR("###ERROR : Could not create real-time capture thread for LiveReader '%s'", lrdr_Name);
+            EXIT_WITH_RUNERROR("###ERROR : Could not create real-time capture thread for LiveReader '%s'", lrdr_datasrc);
         }
-        lrdr_CaptureThreadOn = true;
+        lrdr_on_capture = true;
     }
 
     void LiveReader::stopCapture()
     {
-        lrdr_StopThread = true;
-        if (lrdr_CaptureThreadOn)
+        lrdr_on_stop = true;
+        if (lrdr_on_capture)
         {
-            pthread_join(lrdr_CaptureThread, NULL);
-            lrdr_CaptureThreadOn = false;
+            pthread_join(lrdr_thread_capture, NULL);
+            lrdr_on_capture = false;
         }
 
         sleep(1);
-        lrdr_StopThread = false;
+        lrdr_on_stop = false;
     }
 
     void LiveReader::close()
     {
-        if (lrdr_Name != NULL)
-            delete [] lrdr_Name;
-
-        if (rdr_PcapDescriptor != NULL){
-            pcap_close(rdr_PcapDescriptor);
-            rdr_PcapDescriptor = NULL;
+        if (lrdr_datasrc != NULL)
+        {
+            free(lrdr_datasrc);
         }
 
-        rdr_ReaderOn = false;
+        if (rdr_descriptor != NULL)
+        {
+            pcap_close(rdr_descriptor);
+            rdr_descriptor = NULL;
+        }
+
+        rdr_on = false;
     }
 
     LiveInterfaces::LiveInterfaces()
     {
-        pcap_if_t* interfaceList;
-        char errbuf[PCAP_ERRBUF_SIZE];
-        int err = pcap_findalldevs(&interfaceList, errbuf);
-        if (err < 0)
+        pcap_if_t* iface_list;
+
+        if (pcap_findalldevs(&iface_list, msg) < 0)
         {
-            EXIT_WITH_CONFERROR("###ERROR : Could not find activated network interfaces : %s", errbuf );
+            EXIT_WITH_CONFERROR("###ERROR : Could not find activated network interfaces : %s", msg);
         }
 
-        pcap_if_t* currInterface = interfaceList;
-        while (currInterface != NULL)
+        pcap_if_t* curr_iface = iface_list;
+        while (curr_iface != NULL)
         {
-            LiveReader* dev = new LiveReader(currInterface, true, true, true);
-            currInterface = currInterface->next;
-            li_InterfaceList.insert(li_InterfaceList.end(), dev);
+            LiveReader* dev = new LiveReader(curr_iface, true, true, true);
+            curr_iface = curr_iface->next;
+            li_ifacelist.insert(li_ifacelist.end(), dev);
         }
 
-        pcap_freealldevs(interfaceList);
+        pcap_freealldevs(curr_iface);
     }
 
     LiveReader* LiveInterfaces::getLiveReader(const std::string& name) const
     {
         WRITE_LOG("===Search all live interfaces");
-        for(std::vector<LiveReader*>::const_iterator devIter = li_InterfaceList.begin(); devIter != li_InterfaceList.end(); devIter++)
+        for(std::vector<LiveReader*>::const_iterator dit = li_ifacelist.begin(); dit != li_ifacelist.end(); dit++)
         {
-            std::string devName((*devIter)->getName());
-            if (name == devName)
-                return (*devIter);
+            if (name == std::string((*dit)->getName()))
+                return *dit;
         }
 
         return NULL;
