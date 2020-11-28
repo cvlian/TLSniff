@@ -28,7 +28,7 @@ namespace pump
 
     void parseIPV4(char* s, uint32_t ip_addr)
     {
-        sprintf(s, "%d.%d.%d.%d", (ip_addr >> 24) & 0xFF, (ip_addr >> 16) & 0xFF, (ip_addr >>  8) & 0xFF, ip_addr & 0xFF);
+        sprintf(s, "%d.%d.%d.%d", ip_addr & 0xFF, (ip_addr >> 8) & 0xFF, (ip_addr >> 16) & 0xFF, (ip_addr >> 24) & 0xFF);
     }
 
     int64_t time_diff(timeval* tv1, timeval* tv2)
