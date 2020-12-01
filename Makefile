@@ -12,7 +12,7 @@ MKDIR := mkdir
 
 TARGET := bin/tlsniff
 
-CXXFLAGS := -Wall -O2
+CXXFLAGS := -Wall -O2 -std=c++11
 
 INCLUDES := -I"./header" 
 
