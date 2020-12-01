@@ -245,7 +245,7 @@ int main(int argc, char* argv[])
         doTLSniffOnLive(rdr, &config);
     }
     pump::clearTLSniff();
-    printf(" **All Done**\n");
+    printf("**All Done**\n");
     WRITE_LOG("===Process Finished");
     return 0;
 }
