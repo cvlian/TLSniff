@@ -16,7 +16,7 @@ static const uint32_t FNV_PRIME = 16777619u;
 static const uint32_t OFFSET_BASIS = 2166136261u;
 
 static const uint32_t IN_LIMIT = 1073741824u;
-static const int maxbuf = 262144;
+static const int maxbuf = 65536;
 static const long MEMORY_LIMIT = 8*1024*1024;
 
 namespace pump

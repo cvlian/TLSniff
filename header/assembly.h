@@ -20,13 +20,13 @@
 #include "layer-tcp.h"
 
 
-#define F_SAW_SYN                 0x1
-#define F_SAW_SYNACK              0x2
-#define F_END_SYN_HS              0x4
-#define F_END_FIN_HS              0x8
-#define F_BASE_SEQ_SET           0x10
-#define F_LOST_CLIENTHELLO       0x20
-#define F_LOST_SERVERHELLO       0x40
+#define F_SAW_SYN              0x1
+#define F_SAW_SYNACK           0x2
+#define F_END_SYN_HS           0x4
+#define F_END_FIN_HS           0x8
+#define F_BASE_SEQ_SET        0x10
+#define F_LOST_HELLO          0x20
+#define F_FRAME_OVERLAP       0x40
 
 #define TCP_A_ACK_LOST_PACKET                0x1
 #define TCP_A_DUPLICATE_ACK                  0x2
@@ -42,6 +42,10 @@
 #define TCP_A_ZERO_WINDOW                  0x800
 #define TCP_A_ZERO_WINDOW_PROBE           0x1000
 #define TCP_A_ZERO_WINDOW_PROBE_ACK       0x2000
+#define TCP_A_NON_RECORD                  0x4000
+
+#define MAX_RECORD_LEN       0x4800
+#define MAX_QUEUE_CAPACITY       50
 
 static const std::map<uint8_t, std::string> recordType = {
     { 20, "Change Cipher Spec" },
@@ -73,8 +77,6 @@ static const std::map<uint8_t, std::string> handshakeType = {
     { 25, "(compressed certificate)"}
 };
 
-typedef std::pair<uint32_t, uint32_t> seqack;
-
 namespace pump
 {
 
@@ -90,9 +92,25 @@ namespace pump
     };
 
     struct RecordPointer{
-        uint32_t pos;
+        uint16_t pos;
         uint16_t len;
         uint8_t hd[5];
+    };
+
+    struct SegInfo{
+        uint32_t seq = 0;
+        uint16_t seglen = 0;
+        bool is_newrcd = false;
+
+        bool operator<(const SegInfo& other) const
+        {
+            return (seq < other.seq);
+        }
+
+        bool operator==(const SegInfo& other) const
+        {
+            return (seq == other.seq);
+        }
     };
 
     struct Flow {
@@ -104,15 +122,10 @@ namespace pump
         uint16_t a_flags = 0;
         uint32_t nextseq = 0;
         uint32_t lastack = 0;
-        uint32_t max_seq_acked = 0;
-        uint32_t dup_ack_cnt = 0;
-        uint32_t seg_idx = 0;
-        uint32_t push_bytes = 0;
         uint16_t rcd_cnt = 0;
-        std::set<uint32_t> outoforderSeqs = {};
-        std::set<uint32_t> previousSeqs = {};
-        std::map<uint32_t, seqack> rootSeqAck = {};
-        std::map<uint32_t, RecordPointer> rcdPointers = {};
+        uint16_t rcd_idx = 0;
+        RecordPointer rcd_pt = {0,0,{}};
+        std::set<SegInfo> reserved_seq = {};
     };
 
     struct Stream {
@@ -120,13 +133,15 @@ namespace pump
         Flow server;
     };
 
-    void writeTLSrecord(const char* dir, int ss_idx, bool peer, uint32_t rootSeq);
-
     uint32_t hashStream(pump::Packet* packet);
 
     bool isTcpSyn(pump::Packet* packet);
 
     bool isClient(pump::Packet* packet, Stream* ss);
+
+    bool isTLSrecord(uint8_t* data, uint32_t seglen);
+
+    bool isSSLv2record(uint8_t* data, uint32_t seglen);
 
     class Assembly
     {
@@ -151,6 +166,12 @@ namespace pump
             int addNewStream(pump::Packet* packet);
 
             int getStreamNumber(pump::Packet* packet);
+
+            void writeTLSrecord(const char* dir, int idx, bool peer);
+
+            void cleanOldPacket(const char* dir, int idx, bool peer, Flow* fwd, CaptureConfig* config);
+
+            void parseReservedPacket(const char* dir, int idx, bool peer, uint32_t seq, CaptureConfig* config);
 
         public:
 

@@ -24,6 +24,7 @@ namespace pump
     
     char pktBUF[maxbuf];
     char nameBUF[512];
+
     timeval curr_tv;
 
     static void onInterrupted(void* cookie)
@@ -36,18 +37,6 @@ namespace pump
         printf("\n**All Stop**================================================\n");
         clearTLSniff();
         exit(signum);
-    }
-
-    void writeTLSrecord(const char* dir, int idx, bool peer, uint32_t Seq, uint32_t Ack)
-    {
-        sprintf(nameBUF, "%s%u/%.10d%.10d%c", dir, idx, (peer ? Seq : Ack), (peer ? Ack : Seq), (peer ? 'C' : 'S'));
-        FILE* fp = fopen(nameBUF, "a");
-
-        if (fp == NULL)
-            EXIT_WITH_RUNERROR("###ERROR : an error occurs while writting record data");
-
-        fprintf(fp, "%s", pktBUF);
-        fclose(fp);
     }
 
     uint32_t hashStream(pump::Packet* packet)
@@ -107,6 +96,64 @@ namespace pump
         }
 
         return (ss->client.ip == packet->getLayer<IPv4Layer>()->getHeader()->ip_src);
+    }
+
+    bool isTLSrecord(uint8_t* data, uint32_t seglen)
+    {
+        if(seglen < 5) return false;
+
+        uint8_t rcd_type = *(data);
+        uint16_t rcd_ver = 256**(data+1) + *(data+2);
+        uint16_t rcd_len = 256**(data+3) + *(data+4);
+        
+        if(rcd_type < 20 || rcd_type > 23)
+        {
+            return false;
+        }
+
+        if(rcd_ver/256 != 3 || rcd_ver%256 > 3)
+        {
+            return false;
+        }
+
+        if(rcd_len == 0 || rcd_len >= MAX_RECORD_LEN)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool isSSLv2record(uint8_t* data, uint32_t seglen)
+    {
+        if(seglen < 7) return false;
+
+        uint8_t rcd_type = *(data+2);
+        uint8_t rcd_ver = *(data);
+        uint16_t hd_ver = 256**(data+3) + *(data+4);
+        uint16_t cip_len = 256**(data+5) + *(data+6);
+
+        if(rcd_ver != 0x80)
+        {
+            return false;
+        }
+
+        if(rcd_type != 1)
+        {
+            return false;
+        }
+
+        if(hd_ver/256 != 3 || hd_ver%256 > 3)
+        {
+            return false;
+        }
+
+        if(cip_len == 0 || cip_len%3 != 0)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     Assembly::Assembly(timeval tv)
@@ -184,6 +231,71 @@ namespace pump
         return ab_flowtable[hash];
     }
 
+    void Assembly::writeTLSrecord(const char* dir, int idx, bool peer)
+    {
+        sprintf(nameBUF, "%s%u/%c", dir, idx, (peer ? 'C' : 'S'));
+        FILE* fp = fopen(nameBUF, "a");
+
+        if (fp == NULL)
+            EXIT_WITH_RUNERROR("###ERROR : an error occurs while writting record data %s : %d", nameBUF, ab_pkt_cnt);
+
+        fprintf(fp, "%s", pktBUF);
+        fclose(fp);
+    }
+
+    void Assembly::cleanOldPacket(const char* dir, int idx, bool peer, Flow* fwd, CaptureConfig* config)
+    {
+        SegInfo prev_seq_info;
+        std::set<SegInfo>::iterator it = fwd->reserved_seq.begin();
+        while(it != fwd->reserved_seq.end())
+        {
+            // We may find the lost segment between prev & it 
+            if(prev_seq_info.seq + prev_seq_info.seglen < it->seq)
+            {
+                break;
+            }
+            // previous segment size is larger than expected one (frame overlapping)
+            else if(prev_seq_info.seq + prev_seq_info.seglen > it->seq)
+            {
+                fwd->flags |= F_FRAME_OVERLAP;
+                break;
+            }
+            // 
+            prev_seq_info.seq = it->seq;
+            prev_seq_info.seglen = it->seglen;
+            prev_seq_info.is_newrcd = it->is_newrcd;
+
+            it = fwd->reserved_seq.erase(it);
+            if(prev_seq_info.is_newrcd)
+            {
+                fwd->rcd_pt = {0, 0, {}};
+                parseReservedPacket(dir, idx, peer, prev_seq_info.seq, config);
+                break;
+            }
+        }
+    }
+
+    void Assembly::parseReservedPacket(const char* dir, int idx, bool peer, uint32_t seq, CaptureConfig* config)
+    {
+        sprintf(nameBUF, "%s%u/%.10dT%c", dir, idx, seq, (peer ? 'C' : 'S'));
+        FILE* fp = fopen(nameBUF, "r");
+
+        if (fp == NULL)
+            EXIT_WITH_RUNERROR("###ERROR : encounter an error while loading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
+
+        fseek(fp, 0, SEEK_END);
+        long fsize = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        uint8_t* pData = new uint8_t[fsize];
+        size_t res = fread(pData, 1, fsize, fp);
+        if (res != (size_t)fsize)
+            EXIT_WITH_RUNERROR("###ERROR : encounter an error while reading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
+
+        pump::Packet reservedPacket = pump::Packet(pData, fsize, {}, true);
+
+        parsePacket(&reservedPacket, config);
+    }
+
     void Assembly::parsePacket(pump::Packet* packet, CaptureConfig* config)
     {
 
@@ -230,7 +342,8 @@ namespace pump
         ack -= rev->baseseq;
 
         size_t seglen = packet->getLayer<pump::TcpLayer>()->getLayerPayloadSize();
-
+        uint8_t* payld = packet->getLayer<pump::TcpLayer>()->getLayerPayload();
+        
         if (!(rev->flags & F_BASE_SEQ_SET) && isACK)
         {
             rev->baseseq = ack - 1;
@@ -254,8 +367,36 @@ namespace pump
         && seq > fwd->nextseq
         && !isRST)
         {
+            SegInfo new_info;
+            new_info.seq = seq;
+            new_info.seglen = seglen;
+            new_info.is_newrcd = isTLSrecord(payld, seglen) || isSSLv2record(payld, seglen);
+
+            // duplicate packet with high SEQ (i.e., retransmission)
+            if(fwd->reserved_seq.find(new_info) == fwd->reserved_seq.end())
+            {
+                return;
+            }
+
             fwd->a_flags |= TCP_A_LOST_PACKET;
             WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
+            
+            if(fwd->reserved_seq.size() >= MAX_QUEUE_CAPACITY)
+            {
+                cleanOldPacket(saveDir.c_str(), ss_idx, peer, fwd, config);
+            }
+
+            fwd->reserved_seq.insert(new_info);
+            sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, seq, (peer ? 'C' : 'S'));
+            FILE* fp = fopen(nameBUF, "w");
+            
+            if (fp == NULL)
+                EXIT_WITH_RUNERROR("###ERROR : encounter an error while writing the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
+
+            fwrite(packet->getData(), packet->getDataLen(), 1, fp);
+            fclose(fp);
+            WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
+            return;
         }
 
         // KEEP ALIVE
@@ -273,8 +414,7 @@ namespace pump
         if ((seglen > 0 || isSYN || isFIN)
         && fwd->nextseq
         && seq < fwd->nextseq
-        && !(seglen > 1 && fwd->nextseq - 1  == seq)
-        && fwd->previousSeqs.find(seq) != fwd->previousSeqs.end())
+        && !(seglen > 1 && fwd->nextseq - 1  == seq))
         {
             fwd->a_flags |= TCP_A_RETRANSMISSION;
             WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
@@ -302,79 +442,46 @@ namespace pump
 	    || isSYN
 	    || (fwd->a_flags & (TCP_A_ZERO_WINDOW_PROBE | TCP_A_KEEP_ALIVE))) return;
 
-        fwd->previousSeqs.insert(seq);
+        RecordPointer* rp = &fwd->rcd_pt;
 
-        struct RecordPointer* rcdPointer;
-        seqack rseqack;
-
-        if (fwd->rootSeqAck.find(seq) != fwd->rootSeqAck.end())
+        if (rp->pos)
         {
-            rseqack = fwd->rootSeqAck[seq];
-            rcdPointer = &(fwd->rcdPointers[rseqack.first]);
-            WRITE_LOG("└──Read Record (continued) : %d (%d/%d)", ab_pkt_cnt, rcdPointer->pos, rcdPointer->len);
-        }
-        else
-        {
-            rseqack = seqack(seq, ack);
-            fwd->rootSeqAck[seq] = rseqack;
-            fwd->rcdPointers[seq] = {0, 0, {}};
-            rcdPointer = &(fwd->rcdPointers[seq]);
+            WRITE_LOG("└──Read Record (continued) : %d (%d/%d)", ab_pkt_cnt, rp->pos, rp->len);
         }
 
-        uint8_t* payld = packet->getLayer<pump::TcpLayer>()->getLayerPayload();
         int p = 0;
 
-        for(int i = 0; i < (int)seglen; i++)
+        for (int i = 0; i < (int)seglen; i++)
         {
-            if (rcdPointer->pos < 5)
+            if (rp->pos < 5)
             {
-                rcdPointer->hd[(rcdPointer->pos)++] = *(payld + i);
+                rp->hd[(rp->pos)++] = *(payld + i);
                 continue;
             }
-            else if (rcdPointer->pos == 5)
+            else if (rp->pos == 5)
             {
                 // for SSL 2.0
-                if(peer
-                && rcdPointer->hd[0]/64 == 2
-                && !(rcdPointer->hd[0]%64 == 0 && rcdPointer->hd[1] == 0)
-                && rcdPointer->hd[2] == 1
-                && rcdPointer->hd[3] == 3
-                && rcdPointer->hd[4] <= 3){
-                    rcdPointer->len = 256*(int)(rcdPointer->hd[0]%64) + (int)rcdPointer->hd[1] - 3;
+                if(isSSLv2record(rp->hd, 5))
+                {
+                    rp->len = 256*(int)(rp->hd[0]%64) + (int)rp->hd[1] - 3;
                 }
                 // for SSL 3.0 ~ TLS 1.3
-                else if(rcdPointer->hd[0] >= 20
-                && rcdPointer->hd[0] <= 23
-                && rcdPointer->hd[1] == 3
-                && rcdPointer->hd[2] <= 3
-                && !(rcdPointer->hd[3] == 0 && rcdPointer->hd[4] == 0)){
-
-                    if (!(peer && fwd->rcd_cnt == 0 && (*(payld + i) != 1 || rcdPointer->hd[0] != 22)))
+                else if(isTLSrecord(rp->hd, 5))
+                {
+                    if (!(peer && fwd->rcd_cnt == 0 && (*(payld + i) != 1 || rp->hd[0] != 22)))
                     {
-                        fwd->flags |= F_LOST_CLIENTHELLO;
+                        fwd->flags |= F_LOST_HELLO;
                     }
-                    else if(!(!peer && fwd->rcd_cnt == 0 && (*(payld + i) != 2 || rcdPointer->hd[0] != 22)))
+                    else if(!(!peer && fwd->rcd_cnt == 0 && (*(payld + i) != 2 || rp->hd[0] != 22)))
                     {
-                        fwd->flags |= F_LOST_SERVERHELLO;
+                        fwd->flags |= F_LOST_HELLO;
                     }
-                    rcdPointer->len = 256*(int)rcdPointer->hd[3] + (int)rcdPointer->hd[4];
+                    rp->len = 256*(int)rp->hd[3] + (int)rp->hd[4];
                 }
                 else
                 {
-                    rcdPointer->pos = 0;
-                    if(fwd->a_flags & TCP_A_LOST_PACKET)
-                    {
-                        fwd->outoforderSeqs.insert(seq);
-                        sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, rseqack.first, (peer ? 'C' : 'S'));
-                        FILE* fp = fopen(nameBUF, "w");
-                        
-                        if (fp == NULL)
-                            EXIT_WITH_RUNERROR("###ERROR : encounter an error while writing the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
-
-                        fwrite(packet->getData(), packet->getDataLen(), 1, fp);
-                        fclose(fp);
-                        WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
-                    }
+                    rp->pos = 0;
+                    fwd->a_flags |= TCP_A_NON_RECORD;
                     break;
                 }
                 if(!(config->quitemode))
@@ -389,11 +496,11 @@ namespace pump
                     uint16_t temp = ss->client.port;
                     for (; temp < 10000; temp *= 10) printf(" ");
                     if(!peer) printf("<"); 
-                    uint16_t typelen = (recordType.at(rcdPointer->hd[0])).length() 
-                        + (rcdPointer->hd[0] != 22 ? 0 : (handshakeType.find(*(payld + i)) == handshakeType.end() ? 11 : (handshakeType.at(*(payld + i))).length()));
+                    uint16_t typelen = (recordType.at(rp->hd[0])).length() 
+                        + (rp->hd[0] != 22 ? 0 : (handshakeType.find(*(payld + i)) == handshakeType.end() ? 11 : (handshakeType.at(*(payld + i))).length()));
                     for (int j = 0; j < (50-typelen)/2 + (!peer ? 0 : 1); j++) printf("-");
-                    printf(" %s%s ", (recordType.at(rcdPointer->hd[0])).c_str(),
-                        (rcdPointer->hd[0] != 22 ? "" : (handshakeType.find(*(payld + i)) == handshakeType.end() ? "(encrypted)" : (handshakeType.at(*(payld + i))).c_str())));
+                    printf(" %s%s ", (recordType.at(rp->hd[0])).c_str(),
+                        (rp->hd[0] != 22 ? "" : (handshakeType.find(*(payld + i)) == handshakeType.end() ? "(encrypted)" : (handshakeType.at(*(payld + i))).c_str())));
                     for (int j = 0; j < (50-typelen+1)/2 + (!peer ? 0 : -1); j++) printf("-");
                     if(peer) printf(">"); 
                     for (int j = strlen(sIP); j < 15; j++) printf(" ");
@@ -403,9 +510,10 @@ namespace pump
                 }
                 if(config->outputFileTo != "")
                 {
-                    sprintf(pktBUF+p, "%.2x,%.2x,%.2x,%.2x,%.2x", 
-                        rcdPointer->hd[0], rcdPointer->hd[1], rcdPointer->hd[2], rcdPointer->hd[3], rcdPointer->hd[4]);
-                    p += 14;
+                    fwd->rcd_idx++;
+                    sprintf(pktBUF+p, "%.5d,%.2x,%.2x,%.2x,%.2x,%.2x", 
+                        fwd->rcd_idx + rev->rcd_idx, rp->hd[0], rp->hd[1], rp->hd[2], rp->hd[3], rp->hd[4]);
+                    p += 20;
                 }
             }
             if(config->outputFileTo != "")
@@ -413,19 +521,19 @@ namespace pump
                 sprintf(pktBUF+p, ",%.2x", *(payld + i));
                 p += 3;
             }
-            if(++(rcdPointer->pos) == rcdPointer->len + 5u)
+            if(++(rp->pos) == rp->len + 5u)
             {
-                rcdPointer->pos = 0;
-                (fwd->rcd_cnt)++;
+                rp->pos = 0;
+                fwd->rcd_cnt++;
                 ab_rcd_cnt++;
                 if(config->outputFileTo != "")
                 {
                     sprintf(pktBUF+(p++), "\n");
                     pktBUF[p] = '\0';
-                    writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
+                    writeTLSrecord(saveDir.c_str(), ss_idx, peer);
                     p = 0;
                 }
-                WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rcdPointer->len);
+                WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rp->len);
                 if(ab_rcd_cnt == config->maxRcd)
                 {
                     raise(SIGINT);
@@ -436,52 +544,26 @@ namespace pump
         }
 
         // Write the front part of a record
-        if(rcdPointer->pos > 0)
+        if(rp->pos > 0)
         {
-            if (p > 0)
+            if(config->outputFileTo != "")
             {
-                if(config->outputFileTo != "")
-                {
-                    pktBUF[p] = '\0';
-                    writeTLSrecord(saveDir.c_str(), ss_idx, peer, rseqack.first, rseqack.second);
-                }
-                WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_pkt_cnt, rcdPointer->pos, rcdPointer->len);
+                pktBUF[p] = '\0';
+                writeTLSrecord(saveDir.c_str(), ss_idx, peer);
             }
-            else
-            {
-                WRITE_LOG("└──Maybe a part of record : %d, we should check on next packet (%d)", ab_pkt_cnt, rcdPointer->pos);
-            }
-            fwd->rootSeqAck[nextseq] = rseqack;
-        }
-        // if current payload includes trimmed records, the reserved packet with nextseq is not a part of TLS stream
-        else
-        {
-            return;
+            WRITE_LOG("└──Read Record : %d, but it continues on next packet (%d/%d)", ab_pkt_cnt, rp->pos, rp->len);      
         }
 
-        if(fwd->outoforderSeqs.find(nextseq) == fwd->outoforderSeqs.end()) return;
+        if(fwd->reserved_seq.empty()) return;
 
-        // If the next expected seq num is equal to the first reserved packet, there would be an out-of-order issue
-        sprintf(nameBUF, "%s%u/%.10dT%c", saveDir.c_str(), ss_idx, nextseq, (peer ? 'C' : 'S'));
-        FILE* fp = fopen(nameBUF, "r");
-        
-        if (fp == NULL)
-            EXIT_WITH_RUNERROR("###ERROR : encounter an error while loading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
+        auto seg_info = fwd->reserved_seq.begin();
 
-        fseek(fp, 0, SEEK_END);
-        long fsize = ftell(fp);
-        fseek(fp, 0, SEEK_SET);
-        uint8_t* pData = new uint8_t[fsize];
-        size_t res = fread(pData, 1, fsize, fp);
-        if (res != (size_t)fsize)
-            EXIT_WITH_RUNERROR("###ERROR : encounter an error while reading the misplaced segment from %s : %d", nameBUF, ab_pkt_cnt);
-
-        pump::Packet reservedPacket = pump::Packet(pData, fsize, packet->getTimeStamp(), true);
-
-        fwd->outoforderSeqs.erase(nextseq);
-
-
-        parsePacket(&reservedPacket, config);
+        // If the next expected seq num is equal to the first element in queue, there would be an out-of-order issue
+        if(seg_info->seq == nextseq)
+        {
+            fwd->reserved_seq.erase(seg_info);
+            parseReservedPacket(saveDir.c_str(), ss_idx, peer, nextseq, config);
+        }
     }
 
     void Assembly::managePacket(pump::Packet* packet, CaptureConfig* config)
@@ -520,29 +602,25 @@ namespace pump
     void Assembly::mergeRecord(CaptureConfig* config)
     {
         char strbuf[maxbuf];
-        uint32_t pos, valid_rcd = 0;
-        uint8_t buf[65550];
+        uint32_t valid_rcd = 0;
+        uint8_t bufc[maxbuf], bufs[maxbuf];
 
-        struct dirent **filelist;
-        int numOfFile;
-
-        bool peer;
         bool sni_chk;
         char sni[256], cIP[16], sIP[16];
-        uint32_t spt, ext_bound, sni_len;
+        uint16_t spt, ext_bound, sni_len, eofc, eofs, pc, ps, rc, rs;
 
-        std::map<uint32_t, Stream>::iterator mit;
+        std::map<uint32_t, Stream>::iterator it;
 
         FILE* fw = fopen(config->outputFileTo.c_str(), "w");
         if (fw == NULL)
             EXIT_WITH_RUNERROR("###ERROR : Could not open ouput csv file");
 
-        for(mit = ab_smap.begin(); mit != ab_smap.end(); mit++)
+        for(it = ab_smap.begin(); it != ab_smap.end(); it++)
         {
             if(ab_stop) stop_signal_callback_handler(SIGINT);
 
-            uint32_t ss_idx = mit->first;
-            Stream* ss = &mit->second;
+            uint32_t ss_idx = it->first;
+            Stream* ss = &it->second;
 
             timeval ref_tv;
             gettimeofday(&ref_tv, NULL);
@@ -561,96 +639,142 @@ namespace pump
             parseIPV4(cIP, fwd->ip);
             parseIPV4(sIP, rev->ip);
 
+            while(!fwd->reserved_seq.empty())
+            {
+                cleanOldPacket(saveDir.c_str(), ss_idx, true, fwd, config);
+            }
+
+            while(!rev->reserved_seq.empty())
+            {
+                cleanOldPacket(saveDir.c_str(), ss_idx, false, rev, config);
+            }
+
             sni_chk = false;
 
-            numOfFile = scandir((saveDir + std::to_string(ss_idx)+"/").c_str(), &filelist, 0, alphasort);
-            
-            if (numOfFile < 0) continue;
-            for (int i = 0; i < numOfFile; i++)
+            eofc = fwd->rcd_cnt;
+            eofs = rev->rcd_cnt;
+
+            if(eofc + eofs > 0)
             {
-                // It includes '.' or out-of-order segment files
-                if(strlen(filelist[i]->d_name) != 21) continue;
+                FILE* fc;
+                FILE* fs;
 
-                peer = (filelist[i]->d_name[20] == 'C');
+                fc = fopen((saveDir + std::to_string(ss_idx) + "/C").c_str(), "r");
+                fs = fopen((saveDir + std::to_string(ss_idx) + "/S").c_str(), "r");
 
-                sprintf(nameBUF, "%s%u/%s", saveDir.c_str(), ss_idx, filelist[i]->d_name);
-                FILE* fr = fopen(nameBUF, "r");
-
-                if (fr == NULL)
-                    EXIT_WITH_RUNERROR("###ERROR : encounter an error while reading record file");
-
-                while (fgets(strbuf, maxbuf, fr) != NULL)
+                if(fc == NULL && fs == NULL)
                 {
-                    pos = 0;
+                    goto closemerge;
+                }           
 
-                    for (const char* tok = strtok(strbuf, ","); tok && *tok; tok = strtok(NULL, ",\n"))
+                pc = ps = rc = rs = 0;
+                while(eofc > 0 || eofs > 0 || pc > 0 || ps > 0)
+                {
+                    if(eofc > 0 && pc == 0 && fgets(strbuf, maxbuf, fc) != NULL)
                     {
-                        buf[pos++] = (uint8_t)strtol(tok, NULL, 16);
+                        eofc--;
+
+                        const char* tok = strtok(strbuf, ",");
+                        rc = (uint32_t)atoi(tok);
+
+                        for (tok = strtok(NULL, ",\n"); tok && *tok; tok = strtok(NULL, ",\n"))
+                        {
+                            bufc[pc++] = (uint8_t)strtol(tok, NULL, 16);
+                        }
                     }
 
-                    if (pos < 5 || pos < 256*buf[3]+buf[4]+5u) continue;
-
-                    // parsing server name indication (SNI)
-                    if(!sni_chk)
+                    if(eofs > 0 && ps == 0 && fgets(strbuf, maxbuf, fs) != NULL)
                     {
-                        sni_chk = true;
-                        sni[0] = '\0';
-                        // Only Client Hello has 'SNI'
-                        if((uint32_t)buf[0] != 22 || (uint32_t)buf[5] != 1) goto writesni;
-                        spt = 43;
-                        if (pos <= spt) goto writesni;
-                        // session_id_length
-                        spt += (uint32_t)buf[spt] + 1;		
-                        if (pos <= spt+1) goto writesni;
-                        // cipher_suite_length
-                        spt += 256*(uint32_t)buf[spt] + (uint32_t)buf[spt+1]+2;
-                        if (pos <= spt) goto writesni;
-                        // compressed_method_length
-                        spt += (uint32_t)buf[spt] + 1;
-                        if (pos <= spt+1) goto writesni;
-                        ext_bound = spt + 256*(uint32_t)buf[spt] + (uint32_t)buf[spt+1] + 1;
-                        spt += 2;
-                        // extension parsing
-                        for(; spt + 4 <= ext_bound; )
+                        eofs--;
+
+                        const char* tok = strtok(strbuf, ",");
+                        rs = (uint32_t)atoi(tok);
+
+                        for (tok = strtok(NULL, ",\n"); tok && *tok; tok = strtok(NULL, ",\n"))
                         {
-                            // extension type 0 : server name indication 
-                            if(256*(uint32_t)buf[spt] + (uint32_t)buf[spt+1] == 0)
+                            bufs[ps++] = (uint8_t)strtol(tok, NULL, 16);
+                        }
+                    }
+
+                    if(ps > 0 && (pc == 0 || rc > rs))
+                    {
+                        // SSL session should begin with client-side message
+                        if(!sni_chk) break;
+
+                        fprintf(fw, "S");
+
+                        for(uint32_t i = 0; i < ps; i++){
+                            if(config->outputTypeHex) fprintf(fw, ",%.2x", bufs[i]);
+                            else fprintf(fw, ",%d", bufs[i]);
+                        }
+                        ps = 0;
+                        fprintf(fw, "\n");
+                    }
+                    else if(pc > 0 && (ps == 0 || rc < rs))
+                    {
+                        // parsing server name indication
+                        if(!sni_chk)
+                        {
+                            sni_chk = true;
+                            sni[0] = '\0';
+                            // Only Client Hello has 'SNI'
+                            if((uint32_t)bufc[0] != 22 || (uint32_t)bufc[5] != 1) goto writesni;
+                            spt = 43;
+                            if (pc <= spt) goto writesni;
+                            // session_id_length
+                            spt += (uint32_t)bufc[spt] + 1;		
+                            if (pc <= spt+1) goto writesni;
+                            // cipher_suite_length
+                            spt += 256*(uint32_t)bufc[spt] + (uint32_t)bufc[spt+1]+2;
+                            if (pc <= spt) goto writesni;
+                            // compressed_method_length
+                            spt += (uint32_t)bufc[spt] + 1;
+                            if (pc <= spt+1) goto writesni;
+                            ext_bound = spt + 256*(uint32_t)bufc[spt] + (uint32_t)bufc[spt+1] + 1;
+                            spt += 2;
+                            // extension parsing
+                            for(; spt + 4 <= ext_bound; )
                             {
-                                if (ext_bound <= spt + 8) break;
-                                sni_len = 256*(uint32_t)buf[spt+7] + (uint32_t)buf[spt+8];
-                                for(uint32_t j = 0; j < sni_len; j++)
+                                // extension type 0 : server name indication 
+                                if(256*(uint32_t)bufc[spt] + (uint32_t)bufc[spt+1] == 0)
                                 {
-                                    sni[j] = buf[spt+9+j];
+                                    if (ext_bound <= spt + 8) break;
+                                    sni_len = 256*(uint32_t)bufc[spt+7] + (uint32_t)bufc[spt+8];
+                                    for(uint32_t i = 0; i < sni_len; i++)
+                                    {
+                                        sni[i] = bufc[spt+9+i];
+                                    }
+                                    sni[sni_len] = '\0';
+                                    break;
                                 }
-                                sni[sni_len] = '\0';
-                                break;
-                            }
-                            spt += 256*(uint32_t)buf[spt+2] + (uint32_t)buf[spt+3]+4;
+                                spt += 256*(uint32_t)bufc[spt+2] + (uint32_t)bufc[spt+3]+4;
+                            }                    
+
+                            writesni:
+
+                            fprintf(fw, "%s:%d,%s:%d,%s,%.8d,%d\n",
+                                cIP, fwd->port, sIP, rev->port, (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
+                            valid_rcd++;
                         }
 
-                        writesni:
+                        fprintf(fw, "C");
 
-                        valid_rcd++;
-                        fprintf(fw, "%s:%d,%s:%d,%s,%.8d,%d\n",
-                                cIP, fwd->port, sIP, rev->port, (sni[0] == '\0' ? "none" : sni), ss_idx, fwd->rcd_cnt + rev->rcd_cnt);
+                        for(uint32_t i = 0; i < pc; i++){
+                            if(config->outputTypeHex) fprintf(fw, ",%.2x", bufc[i]);
+                            else fprintf(fw, ",%d", bufc[i]);
+                        }
+                        pc = 0;
+                        fprintf(fw, "\n");
                     }
-
-                    fprintf(fw, "%c", (peer ? 'C' : 'S'));
-
-                    for(uint32_t j = 0; j < pos; j++){
-                        if(config->outputTypeHex) fprintf(fw, ",%.2x", buf[j]);
-                        else fprintf(fw, ",%d", buf[j]);
-                    }
-
-                    fprintf(fw, "\n");
-
                 }
-                fclose(fr);
+                closemerge:
+
+                if(fc != NULL) fclose(fc);
+                if(fs != NULL) fclose(fs);
             }
-            free(filelist);
         }
         fclose(fw);
-        if(valid_rcd > 0) printf("\n");
+        printf("\n");
         printf("**Total SSL flow#**========================================= (%u)", valid_rcd);
     }
 
