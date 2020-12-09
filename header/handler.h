@@ -10,6 +10,7 @@
 
 #include <string>
 
+/* Terminate this program when detect erros during capturing */
 #define EXIT_WITH_RUNERROR(reason, ...) do { \
 	printf("\n " reason "\n", ##__VA_ARGS__); \
     WRITE_LOG(reason, ##__VA_ARGS__); \
@@ -17,12 +18,14 @@
 	exit(1); \
 } while(0)
 
+/* Terminate this program when configuration is failed */
 #define EXIT_WITH_CONFERROR(reason, ...) do { \
 	printf("\n " reason "\n", ##__VA_ARGS__); \
     WRITE_LOG(reason, ##__VA_ARGS__); \
 	exit(1); \
 } while(0)
 
+/* Write error or alert to a log file */
 #define WRITE_LOG(fmt, ...){ \
     FILE* lfile = fopen((logDir + pump::currTime()).c_str(), "a"); \
     if (lfile != NULL){ fprintf(lfile, fmt "\n", ##__VA_ARGS__); fclose(lfile); }\

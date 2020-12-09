@@ -20,6 +20,7 @@
 #include "layer-tcp.h"
 
 
+/* Flow status */
 #define F_SAW_SYN              0x1
 #define F_SAW_SYNACK           0x2
 #define F_END_SYN_HS           0x4
@@ -28,6 +29,7 @@
 #define F_LOST_HELLO          0x20
 #define F_FRAME_OVERLAP       0x40
 
+/* TCP packet status */
 #define TCP_A_ACK_LOST_PACKET                0x1
 #define TCP_A_DUPLICATE_ACK                  0x2
 #define TCP_A_KEEP_ALIVE                     0x4
@@ -47,60 +49,65 @@
 #define MAX_RECORD_LEN       0x4800
 #define MAX_QUEUE_CAPACITY       50
 
-static const std::map<uint8_t, std::string> recordType = {
-    { 20, "Change Cipher Spec" },
-    { 21, "Alert" },
-    { 22, "Handshake" },
-    { 23, "Application Data" }
+static const std::map<uint8_t, std::pair<std::string, uint8_t>> recordType = {
+    { 20, { "Change Cipher Spec", 18 } },
+    { 21, { "Alert", 5 } },
+    { 22, { "Handshake", 9 } },
+    { 23, { "Application Data", 16 } }
 };
 
-static const std::map<uint8_t, std::string> handshakeType = {
-    { 0, "(hello request)"},
-    { 1, "(client hello)"},
-    { 2, "(server hello)"},
-    { 3, "(hello verify request)"},
-    { 4, "(new session ticket)"},
-    { 5, "(end of early data)"},
-    { 6, "(hello retry request)"},
-    { 8, "(encrypted extensions)"},
-    { 11, "(certificate)"},
-    { 12, "(server key exchange)"},
-    { 13, "(certificate request)"},
-    { 14, "(server hello done)"},
-    { 15, "(certificate verify)"},
-    { 16, "(client key exchange)"},
-    { 20, "(finished)"},
-    { 21, "(certificate url)"},
-    { 22, "(certificate status)"},
-    { 23, "(supplemental data)"},
-    { 24, "(key update)"},
-    { 25, "(compressed certificate)"}
+static const std::map<uint8_t, std::pair<std::string, uint8_t>> handshakeType = {
+    { 0,  { "(hello request)", 15} },
+    { 1,  { "(client hello)", 14} },
+    { 2,  { "(server hello)", 14} },
+    { 3,  { "(hello verify request)", 22} },
+    { 4,  { "(new session ticket)", 20} },
+    { 5,  { "(end of early data)", 19} },
+    { 6,  { "(hello retry request)", 21} },
+    { 8,  { "(encrypted extensions)", 22} },
+    { 11, { "(certificate)", 13} },
+    { 12, { "(server key exchange)", 21} },
+    { 13, { "(certificate request)", 21} },
+    { 14, { "(server hello done)", 19} },
+    { 15, { "(certificate verify)", 20} },
+    { 16, { "(client key exchange)", 21} },
+    { 21, { "(certificate url)", 17} },
+    { 22, { "(certificate status)", 20} },
+    { 23, { "(supplemental data)", 19} },
+    { 24, { "(key update)", 12} },
+    { 25, { "(compressed certificate)", 24} }
 };
 
 namespace pump
 {
 
+    /* Data structure to hold capture preferences */
     struct CaptureConfig
     {
-        uint32_t maxPacket;
-        uint32_t maxTime;
-        uint32_t maxRcd;
-        uint32_t maxRcdpf;
-        bool outputTypeHex;
-        bool quitemode;
-        std::string outputFileTo;
+        uint32_t maxPacket;         /* Maximum #packets to be captured */  
+        uint32_t maxTime;           /* Duration limit */
+        uint32_t maxRcd;            /* Maximum #records to be captured*/
+        uint32_t maxRcdpf;          /* Maximum #records extracted per flow */
+        bool outputTypeHex;         /* When set, user will get results in hexadecimal format */
+        bool quitemode;             /* When set, do not display record exchange processes*/
+        std::string outputFileTo;   /* Output file for the data to be written */
     };
 
+    /* Data structure to address record parsing routines */
     struct RecordPointer{
-        uint16_t pos;
-        uint16_t len;
-        uint8_t hd[5];
+        uint16_t rcd_len;           /* Record length */
+        uint16_t rcd_pos;           /* Current position of pointer reading record data */
+        uint16_t hs_len;            /* Handshake length */
+        uint16_t hs_pos;            /* Current position of pointer reading handshake data */
+        uint8_t prev_rcd_type;      /* Previous record type */
+        uint8_t hd[9];              /* First 9 bytes filed of record */
     };
 
+    /* This structure contains segment boundary infos */
     struct SegInfo{
-        uint32_t seq = 0;
-        uint16_t seglen = 0;
-        bool is_newrcd = false;
+        uint32_t seq = 0;           /* Sequence number */
+        uint16_t seglen = 0;        /* Segment length */
+        bool is_newrcd = false;     /* True, if a new record header starts at the first position */
 
         bool operator<(const SegInfo& other) const
         {
@@ -113,6 +120,7 @@ namespace pump
         }
     };
 
+    /* Data structure that keeps flow data */
     struct Flow {
         uint32_t ip = 0;
         uint16_t port = 0;
@@ -124,10 +132,11 @@ namespace pump
         uint32_t lastack = 0;
         uint16_t rcd_cnt = 0;
         uint16_t rcd_idx = 0;
-        RecordPointer rcd_pt = {0,0,{}};
+        RecordPointer rcd_pt = {0,0,0,0,0,{}};
         std::set<SegInfo> reserved_seq = {};
     };
 
+    /* Data structure that keeps bidirectional flow infos */
     struct Stream {
         Flow client;
         Flow server;
@@ -143,6 +152,8 @@ namespace pump
 
     bool isSSLv2record(uint8_t* data, uint32_t seglen);
 
+    bool isUnencryptedHS(uint8_t curr_rcd_type, uint8_t prev_rcd_type);
+
     class Assembly
     {
 
@@ -155,7 +166,7 @@ namespace pump
 
             bool ab_stop;
 
-            struct timeval ab_init_tv, ab_base_tv, ab_print_tv;
+            struct timeval ab_init_tv, ab_print_tv;
 
             std::map<uint32_t, int> ab_flowtable;
 
@@ -167,11 +178,13 @@ namespace pump
 
             int getStreamNumber(pump::Packet* packet);
 
-            void writeTLSrecord(const char* dir, int idx, bool peer);
+            void writeTLSrecord(int idx, bool peer);
 
-            void cleanOldPacket(const char* dir, int idx, bool peer, Flow* fwd, CaptureConfig* config);
+            void displayTLSrecord(Stream* ss, bool peer, uint8_t rcd_type, uint8_t hs_type);
 
-            void parseReservedPacket(const char* dir, int idx, bool peer, uint32_t seq, CaptureConfig* config);
+            void cleanOldPacket(int idx, bool peer, Flow* fwd, CaptureConfig* config);
+
+            void parseReservedPacket(int idx, bool peer, uint32_t seq, CaptureConfig* config);
 
         public:
 
@@ -188,8 +201,6 @@ namespace pump
             uint32_t getTotalRecord() { return ab_rcd_cnt; }
 
             uint64_t getTotalByteLen() { return ab_totalbytes; }
-
-            timeval* getStartTime() { return &ab_init_tv; } 
 
             bool isTerminated() {return ab_stop; }
 

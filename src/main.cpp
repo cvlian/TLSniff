@@ -15,6 +15,7 @@
 #include "handler.h"
 #include "assembly.h"
 
+/* Terminate this program when bad options are given */
 #define EXIT_WITH_OPTERROR(reason, ...) do { \
 	printf("\n " reason "\n", ## __VA_ARGS__); \
     printUsage(); \
@@ -38,12 +39,14 @@ static struct option TLSniffOptions[] =
     {0, 0, 0, 0}
 };
 
+/* Structure to handle the packet dump */
 struct PacketArrivedData
 {
     pump::Assembly* assembly;
     struct pump::CaptureConfig* config;
 };
 
+/* Print help and exit */
 void printUsage()
 {
     printf("\nTLSniff - a fast and simple tool to analyze SSL/TLS records\n"
@@ -70,14 +73,17 @@ void printUsage()
     exit(0);
 }
 
+/* Callback invoked whenever the reader has seen a packet */
 void packetArrive(pump::Packet* packet, pump::LiveReader* rdr, void* cookie)
 {
     PacketArrivedData* data = (PacketArrivedData*)cookie;
     data->assembly->managePacket(packet, data->config);
 }
 
+/* Start gathering record info from the discovered network interface */
 void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
 {
+    // Open the network interface to capture from it
     if (!rdr->open())
         EXIT_WITH_CONFERROR("###ERROR : Could not open the device");
 
@@ -87,51 +93,61 @@ void doTLSniffOnLive(pump::LiveReader* rdr, struct pump::CaptureConfig* config)
     data.config = config;
     rdr->startCapture(packetArrive, &data);
 
-    // run in an endless loop until the user presses ctrl+c
+    // Run in an endless loop until the user presses Ctrl+C
     while(!assembly.isTerminated())
         sleep(1);
 
     rdr->stopCapture();
 
     if(!(config->quitemode)) printf("\n");
+
     pump::print_progressM(assembly.getTotalPacket());
     printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
 
+    // Write all captured records to the specified file
     if(config->outputFileTo != "")
     {
         assembly.registerEvent();
         assembly.mergeRecord(config);
     }
 
+    // Close the capture pipe
     assembly.close();
     delete rdr;
 }
 
+/* Start gathering record info from the discovered network interface */
 void doTLSniffOnPcap(std::string pcapFile, struct pump::CaptureConfig* config)
 {
     pump::PcapReader* rdr = pump::PcapReader::getReader(pcapFile.c_str());
     
+    // Open the pcap file to capture from it
     if (!rdr->open())
         EXIT_WITH_CONFERROR("###ERROR : Could not open input pcap file");
 
     pump::Assembly assembly(init_tv);
     pump::Packet packet;
 
+    // Run in an endless loop until the user presses Ctrl+C 
+    // or the program encounters tne end of file
     while(rdr->getNextPacket(packet) && !assembly.isTerminated())
     {
         assembly.managePacket(&packet, config);
     }
 
     if(!(config->quitemode)) printf("\n");
+
     pump::print_progressM(assembly.getTotalPacket());
     printf(" **%lu Bytes**\n", assembly.getTotalByteLen());
 
+    // Write all captured records to the specified file
     if(config->outputFileTo != "")
     {
         assembly.registerEvent();
         assembly.mergeRecord(config);
     }
 
+    // Close the capture pipe
     assembly.close();
     delete rdr;
 }
@@ -140,9 +156,11 @@ int main(int argc, char* argv[])
 {
     gettimeofday(&init_tv, NULL);
 
+    // Tell the user not to run as root
     if (getuid())
         EXIT_WITH_CONFERROR("###ERROR : Running TLSniff requires root privileges!\n");
 
+    // Set the initial values in the capture options
     std::string readPacketsFromPcap = "";
     std::string readPacketsFromInterface = "";
     std::string outputFileTo = "";
@@ -156,6 +174,7 @@ int main(int argc, char* argv[])
     bool quitemode = false;
     char opt = 0;
 
+    // Set the preferences with values from command-line options 
     while((opt = getopt_long (argc, argv, "c:d:i:l:m:r:w:qxh", TLSniffOptions, &optionIndex)) != -1)
     {
         switch (opt)
@@ -198,14 +217,15 @@ int main(int argc, char* argv[])
         }
     }
 
-    // if no input pcap file or network interface was provided - exit with error
+    // If no input pcap file or network interface was provided - exit with error
     if (readPacketsFromPcap == "" && readPacketsFromInterface == "")
         EXIT_WITH_OPTERROR("###ERROR : Neither interface nor input pcap file were provided");
 
-    // you should choose only one option : pcap or interface - exit with error
+    // Should choose only one option : pcap or interface - exit with error
     if (readPacketsFromPcap != "" && readPacketsFromInterface != "")
         EXIT_WITH_OPTERROR("###ERROR : Choose only one option, pcap or interface");
 
+    // Negative value is not allowed
     if (maxPacket <= 0)
         EXIT_WITH_OPTERROR("###ERROR : #Packet can't be a non-positive integer");
 
@@ -228,9 +248,12 @@ int main(int argc, char* argv[])
         .outputFileTo = outputFileTo
     };
 
+    // Create a directory that holds stream data files
     if(access(saveDir.c_str(), 0) == -1)
         mkdir(saveDir.c_str(), 0777);
 
+    // Read the user's preferences file, if it exists
+    // Otherwise, open a network interface to capture from it
     if (readPacketsFromPcap != "")
     {
         doTLSniffOnPcap(readPacketsFromPcap, &config);
@@ -244,7 +267,10 @@ int main(int argc, char* argv[])
 
         doTLSniffOnLive(rdr, &config);
     }
+
+    // Clear out stuff in the temporal directory
     pump::clearTLSniff();
+
     printf("**All Done**\n");
     WRITE_LOG("===Process Finished");
     return 0;

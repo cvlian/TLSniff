@@ -77,7 +77,7 @@ namespace pump
         uint8_t* data = new uint8_t[pkthdr.caplen];
         memcpy(data, rawdata, pkthdr.caplen);
 
-        if (!packet.setData(data, pkthdr.caplen, pkthdr.ts, static_cast<uint16_t>(prdr_linktype)))
+        if (!packet.setData(data, pkthdr.caplen, static_cast<uint16_t>(prdr_linktype)))
         {
             EXIT_WITH_RUNERROR("###ERROR : PcapReader '%s' is failed to read raw packet data", prdr_datasrc);
         }
@@ -159,7 +159,7 @@ namespace pump
         if (rdr == NULL)
             exit(1);
 
-        Packet Packet(packet, pkt_hdr->caplen, pkt_hdr->ts, false, rdr->getLinkType());
+        Packet Packet(packet, pkt_hdr->caplen, false, rdr->getLinkType());
 
         if (rdr->lrdr_pkt_arrival != NULL)
             rdr->lrdr_pkt_arrival(&Packet, rdr, rdr->lrdr_pkt_arrival_cookie);

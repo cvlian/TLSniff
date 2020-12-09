@@ -32,7 +32,6 @@ namespace pump
             bool pk_delete_data;
             uint16_t pk_linktype;
             uint8_t pk_proto_types;
-            timeval pk_timestamp;
             Layer* pk_firstlayer;
             Layer* pk_lastlayer;
 
@@ -44,11 +43,11 @@ namespace pump
 
             Packet();
 
-            Packet(const uint8_t* data, uint16_t datalen, timeval ts, bool delete_rawdata, uint16_t layertype = LINKTYPE_ETHERNET);
+            Packet(const uint8_t* data, uint16_t datalen, bool delete_rawdata, uint16_t layertype = LINKTYPE_ETHERNET);
 
             ~Packet() { clearData(); }
 
-            bool setData(const uint8_t* data, uint16_t datalen, timeval ts, uint16_t layertype = LINKTYPE_ETHERNET);
+            bool setData(const uint8_t* data, uint16_t datalen, uint16_t layertype = LINKTYPE_ETHERNET);
 
             template<class TLayer> TLayer* getLayer() const;
 
@@ -57,8 +56,6 @@ namespace pump
             const uint8_t* getData() const { return pk_data; }
 
             uint16_t getDataLen() const { return pk_datalen; }
-
-            timeval getTimeStamp() const { return pk_timestamp; }
 
             uint8_t getProtocolTypes() const { return pk_proto_types; }
 

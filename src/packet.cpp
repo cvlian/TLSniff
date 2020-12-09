@@ -52,20 +52,19 @@ namespace pump
         Init();
     }
 
-    Packet::Packet(const uint8_t* data, uint16_t datalen, timeval ts, bool delete_rawdata, uint16_t layertype)
+    Packet::Packet(const uint8_t* data, uint16_t datalen, bool delete_rawdata, uint16_t layertype)
     {
         Init();
         pk_delete_data = delete_rawdata;
-        setData(data, datalen, ts, layertype);
+        setData(data, datalen, layertype);
     }
 
-    bool Packet::setData(const uint8_t* data, uint16_t datalen, timeval ts, uint16_t layertype)
+    bool Packet::setData(const uint8_t* data, uint16_t datalen, uint16_t layertype)
     {
         clearData();
 
         pk_data = (uint8_t*)data;
         pk_datalen = datalen;
-        pk_timestamp = ts;
         pk_linktype = layertype;
         pk_firstlayer = NULL;
         pk_lastlayer = NULL;
