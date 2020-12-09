@@ -58,28 +58,29 @@ $ sudo make all
     Others:
         -h               : Displays this help message and exits
 
+
 #### TLS record extraction with Pcap File:
     $ sudo tlsniff -r example.pcap
 
-It will print the transmitted record messages and their directions between two hosts. 
+</br>It will print the transmitted record messages and their directions between two hosts.</br>
 
-![ex_screenshot](./img/exampleA.png)
+![ex_screenshot](./img/exampleA.png)</br></br></br>
 
 
-In wireshark, 
+In wireshark,</br> 
 
-![ex_screenshot](./img/exampleB.png)
+![ex_screenshot](./img/exampleB.png)</br></br></br>
 
 #### TLS record extraction on Live Network Interface:
     $ sudo tlsniff -i eth0 -w example.csv
 
-Write a csv file with less verbose mode.
+</br>Write a csv file with less verbose mode.</br>
 
-![ex_screenshot](./img/exampleC.png)
+![ex_screenshot](./img/exampleC.png)</br></br></br>
 
-All record data will be written in the order they arrived.
+All record data will be written in the order they arrived.</br>
 
-![ex_screenshot](./img/exampleD.png)
+![ex_screenshot](./img/exampleD.png)</br></br></br>
 
 
 #### Capture TLS records during 1 minute (60 seconds)
