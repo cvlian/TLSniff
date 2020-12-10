@@ -11,8 +11,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/time.h>
 #include <sys/types.h>
 
+#include "utils.h"
 #include "handler.h"
 
 namespace pump
@@ -34,12 +36,23 @@ namespace pump
         DIR *dir, *sub_dir;
         struct dirent *d, *sd;
         char sd_path[256] = {0}, file_path[512] = {0};
+        uint32_t removed = 0;
+        timeval ref_tv, print_tv = {0,0};
 
         if((dir = opendir(saveDir.c_str())) != NULL)
         {
             while((d = readdir(dir)) != NULL)
             {
+
                 if(*(d->d_name) == '.') continue;
+
+                gettimeofday(&ref_tv, NULL);
+
+                if (time_diff(&ref_tv, &print_tv) >= 31250)
+                {
+                    print_progressC(removed);
+                    time_update(&print_tv, &ref_tv);
+                }
 
                 sprintf(sd_path, "%s%s", saveDir.c_str(), d->d_name);
 
@@ -53,10 +66,12 @@ namespace pump
                     closedir(sub_dir);
                 }
                 rmdir(sd_path);
+                ++removed;
             }
             closedir(dir);
         }
         rmdir(saveDir.c_str());
+        printf("\r**Clear Stream Info**======================================= (%d) ", removed);
     }
 
     void EventHandler::handlerRoutine(int signum)

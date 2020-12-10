@@ -59,4 +59,10 @@ namespace pump
         fflush(stdout);
     }
 
+    void print_progressC(uint32_t c)
+    {
+        printf("\r**Clear Stream Info**======================================= (%d)", c);
+        fflush(stdout);
+    }
+
 }

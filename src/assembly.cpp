@@ -1020,7 +1020,7 @@ namespace pump
         }
         fclose(fw);
         printf("\n");
-        printf("**Total SSL flow#**========================================= (%u)", valid_rcd);
+        printf("**Total SSL flow#**========================================= (%u)\n", valid_rcd);
     }
 
     void Assembly::close()

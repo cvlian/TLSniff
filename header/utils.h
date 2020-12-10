@@ -42,6 +42,8 @@ namespace pump
 
     void print_progressA(uint32_t s, uint32_t ts);
 
+    void print_progressC(uint32_t c);
+
 }
 
 #endif
