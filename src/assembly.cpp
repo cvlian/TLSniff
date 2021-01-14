@@ -452,7 +452,7 @@ namespace pump
         && rev->win == 0)
         {
             fwd->a_flags |= TCP_A_ZERO_WINDOW_PROBE;
-            //WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_pkt_cnt);
+            WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_pkt_cnt);
             goto retrans_check;
         }
 
@@ -471,11 +471,12 @@ namespace pump
             // duplicate packet with high SEQ (i.e., retransmission)
             if(fwd->reserved_seq.find(new_info) == fwd->reserved_seq.end())
             {
+                WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
                 return;
             }
 
             fwd->a_flags |= TCP_A_LOST_PACKET;
-            //WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
+            WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
             
             // Clear some old payload data
             // They are unlikely to be used over time as some of the lost segments may
@@ -495,20 +496,20 @@ namespace pump
 
             fwrite(packet->getData(), packet->getDataLen(), 1, fp);
             fclose(fp);
-            //WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
+            WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
             return;
         }
 
         // Set 'KEEP ALIVE' when
         // (1) segment size is zero or one 
         // (2) sequence number is one byte less than the next expected sequence number
-        // (3) any of SYN, FIN, or RST are set
+        // (3) none of SYN, FIN, and RST or set
         if (seglen <= 1
         && !(isFIN || isSYN || isRST)
         && fwd->nextseq - 1 == seq)
         {
             fwd->a_flags |= TCP_A_KEEP_ALIVE;
-            //WRITE_LOG("└─#KEEP ALIVE : %d", ab_pkt_cnt);
+            WRITE_LOG("└─#KEEP ALIVE : %d", ab_pkt_cnt);
         }
 
         retrans_check:
@@ -525,7 +526,7 @@ namespace pump
             // which means the retransmission of dupicated data while its original copy already
             // arrived and handled properly
             fwd->a_flags |= TCP_A_RETRANSMISSION;
-            //WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
+            WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
             return;
         }
 
@@ -540,7 +541,7 @@ namespace pump
         // Store the highest number seen so far for nextseq so we can detect
         // when we receive segments that arrive with a "hole"
         // If we don't have anything since before, just store what we got
-        // ZEROWINDOWPROBEs are special and don't really advance the next sequence number
+        // ZERO WINDOW PROBEs are special and don't really advance the next sequence number
         if ((nextseq > fwd->nextseq || !fwd->nextseq) 
         && !(fwd->a_flags & TCP_A_ZERO_WINDOW_PROBE))
         {
@@ -678,7 +679,6 @@ namespace pump
                             goto saveHS;
                         }
                     }
-                    //++rp->rcd_pos;
                     continue;
                 }
 
