@@ -452,7 +452,7 @@ namespace pump
         && rev->win == 0)
         {
             fwd->a_flags |= TCP_A_ZERO_WINDOW_PROBE;
-            WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_pkt_cnt);
+            //WRITE_LOG("└─#ZERO WINDOW PROBE : %d", ab_pkt_cnt);
             goto retrans_check;
         }
 
@@ -471,12 +471,12 @@ namespace pump
             // duplicate packet with high SEQ (i.e., retransmission)
             if(fwd->reserved_seq.find(new_info) == fwd->reserved_seq.end())
             {
-                WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
+                //WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
                 return;
             }
 
             fwd->a_flags |= TCP_A_LOST_PACKET;
-            WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
+            //WRITE_LOG("└─#LOST SEGMENT : %d", ab_pkt_cnt);
             
             // Clear some old payload data
             // They are unlikely to be used over time as some of the lost segments may
@@ -496,7 +496,7 @@ namespace pump
 
             fwrite(packet->getData(), packet->getDataLen(), 1, fp);
             fclose(fp);
-            WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
+            //WRITE_LOG("└──WRITE TEMPORAL PAYLOAD DATA to %s : %d", nameBUF, ab_pkt_cnt);
             return;
         }
 
@@ -509,7 +509,7 @@ namespace pump
         && fwd->nextseq - 1 == seq)
         {
             fwd->a_flags |= TCP_A_KEEP_ALIVE;
-            WRITE_LOG("└─#KEEP ALIVE : %d", ab_pkt_cnt);
+            //WRITE_LOG("└─#KEEP ALIVE : %d", ab_pkt_cnt);
         }
 
         retrans_check:
@@ -526,7 +526,7 @@ namespace pump
             // which means the retransmission of dupicated data while its original copy already
             // arrived and handled properly
             fwd->a_flags |= TCP_A_RETRANSMISSION;
-            WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
+            //WRITE_LOG("└─#RETRANSMISSION : %d", ab_pkt_cnt);
             return;
         }
 
@@ -560,7 +560,7 @@ namespace pump
 
         if (rp->rcd_pos)
         {
-            WRITE_LOG("└──Read Record (continued) : %d", ab_pkt_cnt);
+            //WRITE_LOG("└──Read Record (continued) : %d", ab_pkt_cnt);
         }
 
         int p = 0;
@@ -697,7 +697,7 @@ namespace pump
                 rp->hs_pos = 0;
                 rp->prev_rcd_type = 0x16;
 
-                WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rp->hs_len+4);
+                //WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rp->hs_len+4);
                 goto saveRCD;
             }
             // Deal with non-handshake message
@@ -716,7 +716,7 @@ namespace pump
                 rp->rcd_pos = 0;
                 rp->prev_rcd_type = rp->hd[0];
 
-                WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rp->rcd_len);
+                //WRITE_LOG("└──Read Record : %d (%d)", ab_pkt_cnt, rp->rcd_len);
                 goto saveRCD;
             }
 
@@ -757,7 +757,7 @@ namespace pump
                 writeTLSrecord(ss_idx, peer);
             }
 
-            WRITE_LOG("└──Read Record : %d, continues on next packet", ab_pkt_cnt);      
+            //WRITE_LOG("└──Read Record : %d, continues on next packet", ab_pkt_cnt);      
         }
 
         // When this has the highest sequence number ever seen,
