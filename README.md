@@ -32,7 +32,7 @@ $ sudo apt-get install libpcap-dev
 $ sudo apt-get update
 $ sudo apt-get upgrade
 
-$ git clone https://github.com/Cvilian/TLSniff
+$ git clone https://github.com/cvlian/TLSniff
 $ cd TLSniff
 $ sudo make all
 ```
