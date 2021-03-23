@@ -1,6 +1,6 @@
 TLSniff
 ==========
-`TLSniff` is a fast and simple tool to analyze the SSL/TLS protocol data frame named `record`. It is a libpcap-based application to parse a network data stream and reassemble the TLS records from the IP/TCP packet payload.
+`TLSniff` is a fast and simple tool to analyze the **SSL/TLS** protocol data frame named `record`. It is a libpcap-based application to parse a network data stream and reassemble the TLS records from the IP/TCP packet payload.
 
 
 ## Table Of Contents
@@ -9,19 +9,24 @@ TLSniff
 - [Installation](#installation)
 - [Usage](#usage)
 - [License](#license)
+- [Reference](#reference)
 
 ## Description
 
 #### 1. What is TLS record?
-Transport Layer Security (TLS), also known as Secure Socket Layer (SSL), is one of the widely used standards of the communication protocol that supports cryptographically protected tunneling for application-level data transmission. TLS provides a secure channel between two communicating peers by fragmenting their messages into a series of manageable block named `TLS record`. Once two hosts successfully negotiated cryptographic keys and parameters for confidentiality, each `record` is independently protected under selected keying materials. The encryption puts constraints on payload inspection for high-level layers (i.e., application layer); however, in other aspects, `record` ironically provides some new significant information, such as the preference of cipher suite, certificate, server name indication (SNI), and so on. In this regard, the stream of `record` is believed to reflect unique application natures or behavioral characteristics of a communicating party. (See https://tools.ietf.org/html/rfc8446 for details.)
+**Transport Layer Security (TLS)**, also known as Secure Socket Layer (SSL), is one of the widely used standards of the communication protocol that supports cryptographically protected tunneling for application-level (e.g., HTTP, SMTP, and so on) data transmission. TLS provides a secure channel between two communicating peers by fragmenting their messages into a series of manageable block named **TLS record**. Once two hosts successfully negotiated cryptographic keys and parameters for confidentiality, each **record** is independently protected under selected keying materials. The encryption puts constraints on payload inspection for high-level layers (i.e., application layer); however, in other aspects, **record** ironically provides some new significant information, such as the preference of cipher suite, certificate, server name indication (SNI), and so on. In this regard, the stream of **record** is believed to reflect unique application natures or behavioral characteristics of a communicating party. (See https://tools.ietf.org/html/rfc8446 for details.)
+
+<p align="center"><img src="./img/secure.png" width="480" height="300"/></p></br>
 
 #### 2. When is TLSniff useful?
-Although there are so many network traffic analyzers that support inspection of the TLS layer, they hardly keep the original form and order of `record` frames due to several issues including retransmission, out-of-order packets, packet loss, etc. Besides, each part of a single `record` can occupy consecutive bits within the different packet payloads because the `record` size can be larger than the maximum transmission unit allowed for the packet delivery. Even when the size of a `record` is small enough to be placed in a single packet, the TLS protocol does not prefer to frequently transmit data blocks. Hence, it crams a bundle of consecutive `records` into one packet, and the remaining bits are truncated and passed to the next packet, and so on. Most toolkits aim for analysis of packet-level delivery rather than only TLS-specific message. Compared to these, `TLSniff` is intended to reconstruct the original TLS `record` stream from the segmented payload data. This tool reads packet data from a pcap format file or a live network interface and writes a `record` sequence of each TCP conversation sharing the same pair of source/destination IP addresses and port numbers on an output file.
+Although there are so many network traffic analyzers that support inspection of the TLS layer, they hardly keep the original form and order of **record** frames due to several issues including **retransmission, out-of-order packets, packet loss**, etc. Besides, each part of a single **record** can occupy consecutive bits within the different packet payloads because the **record** size can be larger than the maximum transmission unit allowed for the packet delivery. Even when the size of a **record** is small enough to be placed in a single packet, the TLS protocol does not prefer to frequently transmit data blocks. Hence, it crams a bundle of consecutive **records** into one packet, and the remaining bits are truncated and passed to the next packet, and so on. Most toolkits aim for analysis of packet-level delivery rather than only TLS-specific message. Compared to these, **TLSniff** is intended to reconstruct the original TLS **record** stream from the segmented payload data. This tool reads packet data from a pcap format file or a live network interface and writes a **record** sequence of each TCP conversation sharing the same pair of source/destination IP addresses and port numbers on an output file.
+
+<p align="center"><img src="./img/record.png" width="480" height="400"/></p></br>
 
 #### 3. Key features
  * TLSniff supports SSL 3.0, TLS 1.0, TLS 1.1, TLS 1.2, TLS 1.3, and an obsolete version SSL 2.0 as well.
  * Process hundreds of thousands of packets per second. (≈ 100Mb/s)
- * Identify connected server name.
+ * Identify the Server Name Indication (SNI) field which allows us to specify the domain name the host is trying to access.
 
 ## Installation
 
@@ -92,3 +97,6 @@ All record data will be written in the order they arrived.</br>
 
 ## License
 TLSniff is provided under a BSD 3-Clause License.
+
+## Reference
+Learn more about `TLSniff` from [this article](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9373407). You can see all the detailed processes and potential benefits of `TLSniff`.
