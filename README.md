@@ -98,7 +98,5 @@ All record data will be written in the order they arrived.</br>
 ## License
 TLSniff is provided under a BSD 3-Clause License.
 
-## Reference
-This project was developed for our cyber defense framework targetting robust intrusion detection over the secured channels. You can learn more about the detailed processes and potential benefits of `TLSniff` from the below paper.
-
-* *Jiwon Yang and Hyuk Lim, "[Deep learning approach for detecting malicious activities over encrypted secure channels](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9373407)," IEEE Access, vol. 9, pp. 39229-39244, March 2021.*
+## Announcement
+We're going to renewing this project, but the current repository will be kept in the original version(last update: ``Mar, 2021``). We have worked with another repository, implementing advanced capture options and user-friendly features. It will be introduced soon.  
